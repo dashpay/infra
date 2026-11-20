@@ -1,5 +1,5 @@
 # The host's own role: be managed through SSM, pull its image, write its
-# backups. It cannot read from the backup bucket or push images.
+# backups. It cannot read a backup back or push images.
 
 data "aws_iam_policy_document" "host_trust" {
   statement {
@@ -33,6 +33,26 @@ data "aws_iam_policy_document" "host" {
     sid       = "WriteBackups"
     actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.backup.arn}/daily/*"]
+  }
+
+  # The record of which data volumes have been formatted (bootstrap.sh). The
+  # host can add a record and see whether one exists. It cannot delete one.
+  statement {
+    sid       = "RecordInitialisedVolumes"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.backup.arn}/volumes/*"]
+  }
+
+  statement {
+    sid       = "LookUpInitialisedVolumes"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.backup.arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["volumes/*"]
+    }
   }
 }
 

@@ -24,6 +24,27 @@ retry() {
   return 1
 }
 
+# --- Packages ----------------------------------------------------------
+
+# First, because the volume step below needs the AWS CLI. Docker and nginx
+# start here with nothing to serve; the volume is not in fstab yet, so their
+# mount requirement has nothing to wait for.
+#
+# The Elastic IP is attached after launch, and until then the host has no
+# way out. Wait for it rather than let a package step fail for good.
+retry 120 5 curl -fsS -o /dev/null --max-time 5 http://connectivity-check.ubuntu.com/
+
+export DEBIAN_FRONTEND=noninteractive
+# Finish anything an interrupted earlier run left half-configured. A no-op on
+# a clean system.
+dpkg --configure -a
+# Error-Mode=any: a mirror that cannot be reached is a failure to retry, not
+# a warning.
+retry 5 20 apt-get update -q -o APT::Update::Error-Mode=any
+retry 3 20 apt-get install -y -q \
+  amazon-ecr-credential-helper certbot docker-compose-v2 docker.io nginx sqlite3
+[ -x /snap/bin/aws ] || retry 3 20 snap install aws-cli --classic
+
 # --- The data volume ---------------------------------------------------
 
 # It is attached after the instance starts.
@@ -37,35 +58,40 @@ if [ ! -b "$dev" ]; then
 fi
 udevadm settle
 
-# The first 4 MiB read back, completely, as zeros. A volume that has never
-# been written does; one with a file system cannot (ext4's superblock is in
-# the first 2 KiB). A failed or short read is not "blank".
-reads_blank() {
-  local n=4194304 got
-  # pipefail is on: a read error fails the whole pipeline.
-  got=$(head -c "$n" "$dev" | tr -d '\0' | wc -c) || return 1
-  [ "$got" = 0 ] || return 1
-  [ "$(head -c "$n" "$dev" | wc -c)" = "$n" ]
+# Formatting is the one step here that can destroy the database, and nothing
+# on the device can prove a volume is new: "no signature found" is also what
+# a failed probe reports, and an unwritten encrypted volume reads back as
+# noise, not zeros. So the proof is kept elsewhere. A volume is formatted
+# only if the backup bucket has no record of it; the record is written right
+# after, and from then on this script never formats that volume again.
+# Failing to read the bucket is a stop, and the unit retries later.
+initialised=$(/snap/bin/aws s3api list-objects-v2 --region "$PRH_REGION"   --bucket "$PRH_BACKUP_BUCKET" --prefix "volumes/$PRH_VOLUME_ID"   --query KeyCount --output text)
+record() {
+  date -u +%Y-%m-%dT%H:%M:%SZ | /snap/bin/aws s3 cp --only-show-errors     --region "$PRH_REGION" - "s3://$PRH_BACKUP_BUCKET/volumes/$PRH_VOLUME_ID"
 }
 
-# Formatting is the one step here that can destroy the database, so it needs
-# positive proof of a new volume: the low-level probe finds no signature and
-# the start of the device reads as zeros. blkid's "nothing found" (exit 2)
-# alone is not proof: it also covers "could not read the device". Anything
-# short of both is a stop, and the unit retries later.
-fstype=$(blkid -p -o value -s TYPE "$dev" 2> /dev/null || true)
-if [ -n "$fstype" ]; then
-  if [ "$fstype" != ext4 ]; then
-    echo "data volume holds $fstype, not ext4: not touching it" >&2
-    exit 1
-  fi
+set +e
+fstype=$(blkid -p -o value -s TYPE "$dev" 2> /dev/null)
+probe=$?
+set -e
+
+if [ "$probe" = 0 ] && [ "$fstype" = ext4 ]; then
   echo "data volume has a file system"
-elif reads_blank && [ -z "$(lsblk -dno FSTYPE "$dev")" ]; then
-  echo "data volume is new (no signature, reads as zeros): formatting"
+  # Formatted, but the record was not written (an interrupted first run).
+  [ "$initialised" != 0 ] || record
+elif [ "$probe" = 0 ]; then
+  echo "data volume holds $fstype, not ext4: not touching it" >&2
+  exit 1
+elif [ "$initialised" != 0 ]; then
+  echo "data volume was initialised before but shows no file system now (blkid exit $probe): not touching it" >&2
+  exit 1
+elif [ "$probe" = 2 ] && [ -z "$(lsblk -dno FSTYPE "$dev")" ] && [ -z "$(wipefs -n "$dev")" ]; then
+  echo "data volume has never been initialised and holds no signature: formatting"
   mkfs.ext4 -q -L pr-hygiene "$dev"
   udevadm settle
+  record
 else
-  echo "data volume has no recognised file system but is not provably blank: not touching it" >&2
+  echo "could not probe the data volume (blkid exit $probe): not touching it" >&2
   exit 1
 fi
 
@@ -83,23 +109,6 @@ mountpoint -q "$mnt" || mount "$mnt"
 
 install -d -o "$PRH_SERVICE_UID" -g "$PRH_SERVICE_UID" -m 0700 "$mnt/data" "$mnt/backup"
 install -d -m 0700 "$mnt/deploy" "$mnt/letsencrypt"
-
-# --- Packages ----------------------------------------------------------
-
-# The Elastic IP is attached after launch, and until then the host has no
-# way out. Wait for it rather than let a package step fail for good.
-retry 120 5 curl -fsS -o /dev/null --max-time 5 http://connectivity-check.ubuntu.com/
-
-export DEBIAN_FRONTEND=noninteractive
-# Finish anything an interrupted earlier run left half-configured. A no-op on
-# a clean system.
-dpkg --configure -a
-# Error-Mode=any: a mirror that cannot be reached is a failure to retry, not
-# a warning.
-retry 5 20 apt-get update -q -o APT::Update::Error-Mode=any
-retry 3 20 apt-get install -y -q \
-  amazon-ecr-credential-helper certbot docker-compose-v2 docker.io nginx sqlite3
-[ -x /snap/bin/aws ] || retry 3 20 snap install aws-cli --classic
 
 # --- TLS and nginx -----------------------------------------------------
 

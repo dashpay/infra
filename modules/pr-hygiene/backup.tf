@@ -37,7 +37,11 @@ resource "aws_s3_bucket_lifecycle_configuration" "backup" {
     id     = "expire-backups"
     status = "Enabled"
 
-    filter {}
+    # Backups only. The bucket also holds volumes/, the record of which
+    # data volumes have been formatted, and that must never expire.
+    filter {
+      prefix = "daily/"
+    }
 
     expiration {
       days = var.backup_retention_days
