@@ -29,6 +29,7 @@ DEFAULTS = {
     "limits": {
         "min_free_gib_start": 15,   # refuse to start a replay below this
         "min_free_gib_abort": 5,    # stop a running replay below this
+        "min_free_state_gib": 0.5,  # same, for the memory filesystem that holds the Platform state
         "timeout_hours": 20,
         "stall_minutes": 30,        # no new block for this long while behind
         "max_restarts": 5,          # of Drive or Tenderdash during one replay
@@ -256,6 +257,10 @@ class Sync:
         self.status_dir = f"{self.root}/spool/status"
         self.project = parse_env(self.env_file)["COMPOSE_PROJECT_NAME"]
         self.hold_file = f"{self.root}/state/{network}.hold"
+        # Drive and Tenderdash state lives in memory (a tmpfs of fixed size): a replay
+        # syncs to disk several times per block, and this host's disk takes 8 to 30 ms
+        # for each. The state is rebuilt by every run, so nothing of value is at risk.
+        self.pdata = f"{self.root}/ram/{network}"
         self.state = read_json(self.state_file) or {"phase": "idle", "run": None, "last_passed": None,
                                                      "last_request": None, "pulled": []}
         self.samples = collections.deque(maxlen=400)
@@ -356,7 +361,12 @@ class Sync:
     def disk(self):
         u = shutil.disk_usage(self.root)
         g = 2 ** 30
-        return {"sizeGiB": round(u.total / g, 1), "usedGiB": round(u.used / g, 1), "freeGiB": round(u.free / g, 1)}
+        out = {"sizeGiB": round(u.total / g, 1), "usedGiB": round(u.used / g, 1), "freeGiB": round(u.free / g, 1)}
+        if os.path.ismount(self.pdata):
+            m = shutil.disk_usage(self.pdata)
+            out.update(stateSizeGiB=round(m.total / g, 1), stateUsedGiB=round(m.used / g, 2),
+                       stateFreeGiB=round(m.free / g, 2))
+        return out
 
     def counters(self):
         """Cumulative bytes: Tenderdash p2p from its metrics, Core from getnettotals."""
@@ -560,8 +570,9 @@ class Sync:
         log(f"run {run['id']}: requested image {req['image']}")
         if self.hold():
             return self.reject(run, "refused", f"on hold: {self.hold()}")
-        if not os.path.ismount(self.root):
-            return self.reject(run, "failed", f"{self.root} is not mounted")
+        for mount in (self.root, self.pdata):
+            if not os.path.ismount(mount):
+                return self.reject(run, "failed", f"{mount} is not mounted")
         free = self.disk()["freeGiB"]
         if free < self.lim["min_free_gib_start"]:
             return self.reject(run, "failed",
@@ -607,7 +618,7 @@ class Sync:
         sh(["docker", "volume", "rm", "--force", f"{self.project}_drive_abci_data",
             f"{self.project}_drive_tenderdash"], check=False)
         for d in ("drive", "tenderdash"):
-            path = f"{self.root}/data/{self.net}/{d}"
+            path = f"{self.pdata}/{d}"
             os.makedirs(path, exist_ok=True)
             for entry in os.listdir(path):
                 p = os.path.join(path, entry)
@@ -647,9 +658,12 @@ class Sync:
                 return self.finish("failed", f"{s} restarted {c['restarts']} times")
             if c["status"] not in ("running", "restarting"):
                 return self.finish("failed", f"{s} is {c['status']} (exit {c['exit']})")
-        free = self.disk()["freeGiB"]
-        if free < self.lim["min_free_gib_abort"]:
-            return self.finish("failed", f"stopped: only {free} GiB free in {self.root}")
+        disk = self.disk()
+        if disk["freeGiB"] < self.lim["min_free_gib_abort"]:
+            return self.finish("failed", f"stopped: only {disk['freeGiB']} GiB free in {self.root}")
+        if disk.get("stateFreeGiB", 0) < self.lim["min_free_state_gib"]:
+            return self.finish("failed", f"stopped: the Platform state has outgrown its {disk.get('stateSizeGiB')} GiB "
+                                         f"memory filesystem; raise its size in /etc/fstab")
         if age > self.lim["timeout_hours"] * 3600:
             return self.finish("failed", f"not at the tip after {self.lim['timeout_hours']} hours")
         td = self.td_status()
@@ -693,6 +707,16 @@ class Sync:
         """After a pass: keep the picture current, nothing is decided here."""
         td = self.td_status()
         run = self.state["run"]
+        passed_at = (self.state.get("last_passed") or {}).get("height") or 0
+        if td and td["height"] < passed_at - 100:
+            # The state is in memory, so a reboot empties it and the containers start
+            # again from block 1. That would be a replay nobody asked for: stop it.
+            log(f"the node is at {td['height']}, below the {passed_at} it passed at: state lost, stopping it")
+            self.compose("stop", *PLATFORM_SERVICES, check=False)
+            self.state["phase"] = "idle"
+            self.state["last_request"] = {"id": None, "result": "stopped", "finishedAt": iso(),
+                                          "reason": "Platform state was lost (reboot); the next run rebuilds it"}
+            return
         if run and td:
             run.update(height=td["height"], referenceHeight=self.reference_height())
         states = {s: self.inspect(s) for s in PLATFORM_SERVICES}

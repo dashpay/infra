@@ -31,7 +31,14 @@ if ! mountpoint -q "$S"; then
   systemctl daemon-reload
   mount "$S"
 fi
-mkdir -p "$S"/{dashmate,home,data,state,runs,bin,dl} "$S"/spool/{requests,status/results}
+mkdir -p "$S"/{dashmate,home,data,state,runs,bin,dl} "$S"/spool/{requests,status/results} "$S"/ram/{testnet,mainnet}
+# Drive and Tenderdash state in memory, with a fixed size per network (see README, "Disk and memory").
+for line in "tmpfs $S/ram/testnet tmpfs size=${TESTNET_STATE:-16g},mode=0700,noatime,nofail 0 0" \
+            "tmpfs $S/ram/mainnet tmpfs size=${MAINNET_STATE:-8g},mode=0700,noatime,nofail 0 0"; do
+  grep -q "^tmpfs $(echo "$line" | cut -d' ' -f2) " /etc/fstab || echo "$line" >> /etc/fstab
+done
+systemctl daemon-reload
+for n in testnet mainnet; do mountpoint -q "$S/ram/$n" || mount "$S/ram/$n"; done
 chmod 755 "$S" "$S/spool" "$S/spool/status" "$S/spool/status/results"
 chmod 700 "$S"/{home,data,state,runs}
 chown 1001:0 "$S/spool/requests"
@@ -69,7 +76,7 @@ install -m 755 "$here/pscompose" "$S/bin/pscompose"
 for c in testnet mainnet; do
   dm config render --config=$c
   (umask 077; dm config envs --config=$c > "$S/state/$c.env")
-  mkdir -p "$S/data/$c"/{core,drive,tenderdash}
+  mkdir -p "$S/data/$c/core" "$S/ram/$c"/{drive,tenderdash}
 done
 # Host ports for Tenderdash RPC and metrics (loopback). Kept if already there: they also hold the current images.
 [ -e "$S/state/testnet.sync.env" ] || printf 'SYNC_TD_RPC_HOSTPORT=36657\nSYNC_TD_METRICS_HOSTPORT=36660\n' > "$S/state/testnet.sync.env"

@@ -33,8 +33,9 @@ platform-sync-runner ── writes ──▶ /srv/platform-sync/spool/requests/<
   `spool/status/<network>.json` current (height, image, last result).
 - The containers are dashmate's own compose services. dashmate (a release
   tarball in `/srv/platform-sync/dashmate`, with its own home directory)
-  renders the configuration; `compose.override.yml` moves the data, removes
-  the published ports and caps logs, CPU and memory.
+  renders the configuration; `compose.override.yml` moves the data (Core to a
+  fixed-size disk filesystem, Platform state to memory), removes the
+  published ports and caps logs, CPU and memory.
 
 ## What "auto" runs
 
@@ -62,31 +63,47 @@ reaching the tip from genesis means every block's state matched.
 
 A run **fails** on: an AppHash mismatch or consensus failure in the logs, a
 container that is gone, out of memory or restarted 5 times, no new block for
-30 minutes, 20 hours without reaching the tip, or less than 5 GiB free.
+30 minutes, 20 hours without reaching the tip, or running out of its disk or
+memory allowance.
 On failure Drive and Tenderdash are stopped and **their data is left in
-place** until the next run starts; the last 3,000 log lines of each are saved
-under `runs/<network>/<id>/`.
+place** until the next run starts or the host reboots; the last 3,000 log
+lines of each are saved under `runs/<network>/<id>/`.
 
-## Disk
+## Disk and memory
 
-Everything the sync writes lives in `/srv/platform-sync`, a fixed 120 GiB
-ext4 image (`/srv/platform-sync.img`, mounted through `/etc/fstab`). It cannot
-grow into the root disk, and the daemons refuse to run if it is not mounted.
+Everything the sync keeps on disk lives in `/srv/platform-sync`, a fixed
+120 GiB ext4 image (`/srv/platform-sync.img`, mounted through `/etc/fstab`).
+It cannot grow into the root disk, and the daemons refuse to run if it is not
+mounted.
 
-| What | Size (2026-11) | Grows |
-|---|---|---|
-| mainnet Core, full with txindex | about 50 GB | about 0.5 GB a month |
-| testnet Core | about 5 GB | slowly |
-| Platform state per network (Tenderdash + Drive) | 2 to 5 GB | with the chain; rewritten each run |
-| dashmate, runner, logs of failed runs | about 2 GB | bounded |
+| What | Where | Size (2026-11) | Grows |
+|---|---|---|---|
+| mainnet Core, full with txindex | disk | about 50 GB | about 0.5 GB a month |
+| testnet Core | disk | about 5 GB | slowly |
+| dashmate, runner, logs of failed runs | disk | about 2 GB | bounded |
+| testnet Platform state (Tenderdash + Drive) | memory, 16 GiB at most | about 5 GB | with the chain; rewritten each run |
+| mainnet Platform state | memory, 8 GiB at most | about 2.5 GB | with the chain; rewritten each run |
 
-A run needs 15 GiB free to start and is stopped below 5 GiB. Outside this
-filesystem the sync leaves only Docker images (a few hundred MB each; the
-daemon removes the ones it pulled once no container uses them) and container
-logs (capped at 200 MB per container).
+**The Platform state is held in memory**, in one tmpfs per network
+(`/srv/platform-sync/ram/<network>`, sized in `/etc/fstab`). A replay syncs to
+disk several times for every block, and this host's NVMe takes 8 to 30 ms for
+each: on disk the replay ran at 12 blocks a second, in memory at 58. The state
+is rebuilt by every run, so nothing of value is at risk. What it costs:
 
-To grow it: `truncate -s <new>G /srv/platform-sync.img`, `losetup -c` on its
-loop device, `resize2fs` the device. Online, no restart.
+- A reboot empties it. The daemon notices the node restarting from block 1,
+  stops it, and the next run rebuilds it.
+- The memory is charged to the Drive and Tenderdash containers, which is why
+  their limits are 20 GiB each.
+- When a chain outgrows its tmpfs the run fails and says so; raise `size=` in
+  `/etc/fstab` and `mount -o remount`.
+
+A run needs 15 GiB of disk free to start and is stopped below 5 GiB. Outside
+these filesystems the sync leaves only Docker images (a few hundred MB each;
+the daemon removes the ones it pulled once no container uses them) and
+container logs (capped at 200 MB per container).
+
+To grow the disk image: `truncate -s <new>G /srv/platform-sync.img`,
+`losetup -c` on its loop device, `resize2fs` the device. Online, no restart.
 
 ## Network data
 

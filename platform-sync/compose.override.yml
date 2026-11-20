@@ -1,5 +1,7 @@
 # Applied on top of dashmate's own compose files for the platform-sync stacks.
-# - Data lives in /srv/platform-sync (a fixed-size filesystem), never on the root disk.
+# - Core data lives in /srv/platform-sync (a fixed-size filesystem), never on the root disk.
+# - Drive and Tenderdash state lives in memory (/srv/platform-sync/ram/<network>, a tmpfs of
+#   fixed size). It is rebuilt by every run, and a replay on this host's disk is flush-bound.
 # - Nothing is published except Tenderdash RPC and metrics on loopback.
 # - Logs and resources are capped.
 x-sync-logging: &sync-logging
@@ -19,14 +21,15 @@ services:
     ports: !override []
     logging: *sync-logging
     cpus: 6
-    mem_limit: 12g
+    # The limits of these two include their state: tmpfs pages are charged to the writer.
+    mem_limit: 20g
   drive_tenderdash:
     ports: !override
       - 127.0.0.1:${SYNC_TD_RPC_HOSTPORT:?err}:${PLATFORM_DRIVE_TENDERDASH_RPC_PORT:?err}
       - 127.0.0.1:${SYNC_TD_METRICS_HOSTPORT:?err}:${PLATFORM_DRIVE_TENDERDASH_METRICS_PORT:?err}
     logging: *sync-logging
     cpus: 4
-    mem_limit: 8g
+    mem_limit: 20g
 
 volumes:
   core_data:
@@ -34,7 +37,7 @@ volumes:
     driver_opts: { type: none, o: bind, device: "/srv/platform-sync/data/${CONFIG_NAME:?err}/core" }
   drive_abci_data:
     driver: local
-    driver_opts: { type: none, o: bind, device: "/srv/platform-sync/data/${CONFIG_NAME:?err}/drive" }
+    driver_opts: { type: none, o: bind, device: "/srv/platform-sync/ram/${CONFIG_NAME:?err}/drive" }
   drive_tenderdash:
     driver: local
-    driver_opts: { type: none, o: bind, device: "/srv/platform-sync/data/${CONFIG_NAME:?err}/tenderdash" }
+    driver_opts: { type: none, o: bind, device: "/srv/platform-sync/ram/${CONFIG_NAME:?err}/tenderdash" }
