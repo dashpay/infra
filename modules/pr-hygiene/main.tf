@@ -283,14 +283,17 @@ resource "aws_instance" "this" {
     auto_recovery = "default"
   }
 
+  # Tagged here, not with volume_tags: that argument claims every volume
+  # attached to the instance, the data volume included, and would fight the
+  # data volume's own tags on every plan.
   root_block_device {
     volume_type = "gp3"
     volume_size = 20
     encrypted   = true
+    tags        = merge(local.tags, { Name = "${var.name}-root" })
   }
 
-  tags        = local.tags
-  volume_tags = merge(local.tags, { Name = "${var.name}-root" })
+  tags = local.tags
 
   lifecycle {
     ignore_changes = [ami]
