@@ -91,6 +91,9 @@ install -d -m 0700 "$mnt/deploy" "$mnt/letsencrypt"
 retry 120 5 curl -fsS -o /dev/null --max-time 5 http://connectivity-check.ubuntu.com/
 
 export DEBIAN_FRONTEND=noninteractive
+# Finish anything an interrupted earlier run left half-configured. A no-op on
+# a clean system.
+dpkg --configure -a
 # Error-Mode=any: a mirror that cannot be reached is a failure to retry, not
 # a warning.
 retry 5 20 apt-get update -q -o APT::Update::Error-Mode=any
