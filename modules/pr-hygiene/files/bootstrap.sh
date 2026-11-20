@@ -65,7 +65,12 @@ udevadm settle
 # only if the backup bucket has no record of it; the record is written right
 # after, and from then on this script never formats that volume again.
 # Failing to read the bucket is a stop, and the unit retries later.
-initialised=$(/snap/bin/aws s3api list-objects-v2 --region "$PRH_REGION"   --bucket "$PRH_BACKUP_BUCKET" --prefix "volumes/$PRH_VOLUME_ID"   --query KeyCount --output text)
+# --no-paginate: the paginating listing drops KeyCount from its answer.
+initialised=$(/snap/bin/aws s3api list-objects-v2 --region "$PRH_REGION"   --bucket "$PRH_BACKUP_BUCKET" --prefix "volumes/$PRH_VOLUME_ID"   --no-paginate --max-keys 1 --query KeyCount --output text)
+case "$initialised" in
+  0 | 1) ;;
+  *) echo "unexpected answer about the volume's record: '$initialised'" >&2; exit 1 ;;
+esac
 record() {
   date -u +%Y-%m-%dT%H:%M:%SZ | /snap/bin/aws s3 cp --only-show-errors     --region "$PRH_REGION" - "s3://$PRH_BACKUP_BUCKET/volumes/$PRH_VOLUME_ID"
 }
