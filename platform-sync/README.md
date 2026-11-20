@@ -112,10 +112,13 @@ little as possible, and every run records what it moved (`bytes` in the
 result: Tenderdash p2p from its metrics, Core from `getnettotals`, and the
 compressed image size if it was downloaded).
 
-- **mainnet**: Core and Tenderdash each have exactly one peer, the mainnet
-  observer that already runs on this host (`-connect=` for Core; a persistent
-  peer with `allowlist-only` for Tenderdash). A mainnet replay uses no
-  internet data beyond the image.
+- **mainnet**: both chains come from the mainnet observer that already runs
+  on this host, and from nowhere else. Core is started with `-connect=`, and
+  Tenderdash has the observer as its persistent peer. Tenderdash 2.0.0-dev.3
+  still dials the other peers it learns about, `allowlist-only` or not, so
+  `platform-sync-firewall.service` adds one rule to Docker's `DOCKER-USER`
+  chain: nothing from the mainnet stack's subnet is forwarded outside Docker's
+  private range. A mainnet replay uses no internet data beyond the image.
 - **testnet**: there is no local source, so the blocks come from the public
   network: about 3 GB for a replay at height 720,000, growing with the chain.
 
@@ -186,6 +189,7 @@ Cancelling the GitHub job stops the waiting, not the replay.
 | `compose.override.yml` | Data location, ports, log and resource caps |
 | `pscompose` | `docker compose` for one stack, for people |
 | `systemd/platform-sync@.service` | One daemon per network |
+| `systemd/platform-sync-firewall.service` | Keeps the mainnet stack off the internet |
 | `runner/` | The runner container and its registration |
 | `install.sh` | Builds the host side from nothing |
 | `test_platform_sync.py` | `python3 -m unittest platform-sync/test_platform_sync.py` |

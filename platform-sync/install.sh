@@ -89,7 +89,10 @@ for c in testnet mainnet; do "$S/bin/pscompose" $c up -d --no-deps core; done
 install -d -m 755 /opt/platform-sync /etc/platform-sync
 install -m 644 "$here/platform_sync.py" "$here/request.py" "$here/test_platform_sync.py" /opt/platform-sync/
 install -m 644 "$here/systemd/platform-sync@.service" /etc/systemd/system/platform-sync@.service
+# The firewall unit carries the mainnet subnet; change both together.
+install -m 644 "$here/systemd/platform-sync-firewall.service" /etc/systemd/system/platform-sync-firewall.service
 systemctl daemon-reload
+systemctl enable --now platform-sync-firewall.service
 systemctl enable --now platform-sync@testnet.service platform-sync@mainnet.service
 
 # 6. The runner is registered separately, with a token: see runner/register.sh.

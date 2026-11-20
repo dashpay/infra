@@ -1,0 +1,21 @@
+[Unit]
+Description=Keep the mainnet platform-sync stack off the internet
+Documentation=https://github.com/dashpay/infra/tree/master/platform-sync
+# The mainnet stack takes both chains from the mainnet observer on this host.
+# Tenderdash still learns other peers from it and dials them (allowlist-only
+# does not stop that in 2.0.0-dev.3), so the rule is made at the network level:
+# nothing from the stack's subnet is forwarded to an address outside Docker's
+# private range. Docker creates DOCKER-USER and leaves its contents alone.
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=SUBNET=172.30.25.0/24
+ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -s "$SUBNET" ! -d 172.16.0.0/12 -j REJECT --reject-with icmp-net-prohibited 2>/dev/null || iptables -I DOCKER-USER -s "$SUBNET" ! -d 172.16.0.0/12 -j REJECT --reject-with icmp-net-prohibited'
+ExecStop=/bin/sh -c 'iptables -D DOCKER-USER -s "$SUBNET" ! -d 172.16.0.0/12 -j REJECT --reject-with icmp-net-prohibited 2>/dev/null || true'
+
+[Install]
+WantedBy=docker.service
