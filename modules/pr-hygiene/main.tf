@@ -161,6 +161,7 @@ locals {
     Description=Obtain the TLS certificate and turn on HTTPS for the PR Hygiene service
     After=network-online.target nginx.service
     Wants=network-online.target
+    RequiresMountsFor=/srv/pr-hygiene
 
     [Service]
     Type=oneshot
@@ -177,10 +178,43 @@ locals {
   unit_backup = <<-EOT
     [Unit]
     Description=Back up the PR Hygiene database to S3
+    RequiresMountsFor=/srv/pr-hygiene
 
     [Service]
     Type=oneshot
     ExecStart=/usr/local/sbin/pr-hygiene-backup
+  EOT
+
+  # Runs the bootstrap script until it has succeeded once. A unit, not a
+  # cloud-init command, so a step that fails for a passing reason (no way
+  # out yet, a mirror down) is tried again, on this boot and on later ones.
+  unit_bootstrap = <<-EOT
+    [Unit]
+    Description=Set up the PR Hygiene host
+    After=network-online.target
+    Wants=network-online.target
+    ConditionPathExists=!/var/lib/pr-hygiene/bootstrapped
+
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStart=/usr/local/sbin/pr-hygiene-bootstrap
+    TimeoutStartSec=1800
+    Restart=on-failure
+    RestartSec=60
+
+    [Install]
+    WantedBy=multi-user.target
+  EOT
+
+  # Docker and nginx read from the data volume (the database; the
+  # certificate). The volume is mounted with nofail so the host always
+  # boots, which means nothing else stops them starting without it: Docker
+  # would bring the container back on an empty directory. With this, they
+  # wait for the mount and do not start if it fails.
+  dropin_mount = <<-EOT
+    [Unit]
+    RequiresMountsFor=/srv/pr-hygiene
   EOT
 
   timer_backup = <<-EOT
@@ -195,17 +229,10 @@ locals {
     WantedBy=timers.target
   EOT
 
+  # Packages are installed by the bootstrap script, not here: the Elastic IP
+  # arrives after launch, and cloud-init does not retry a package step that
+  # ran before the host had a way out.
   cloud_config = {
-    package_update  = true
-    package_upgrade = true
-    packages = [
-      "amazon-ecr-credential-helper",
-      "certbot",
-      "docker-compose-v2",
-      "docker.io",
-      "nginx",
-      "sqlite3",
-    ]
     write_files = [
       { path = "/etc/pr-hygiene/host.env", permissions = "0644", content = local.host_env },
       { path = "/etc/pr-hygiene/compose.yaml", permissions = "0644", content = yamlencode(local.compose) },
@@ -217,13 +244,17 @@ locals {
       { path = "/usr/local/sbin/pr-hygiene-deploy", permissions = "0755", content = file("${path.module}/files/deploy.sh") },
       { path = "/usr/local/sbin/pr-hygiene-tls", permissions = "0755", content = file("${path.module}/files/tls.sh") },
       { path = "/usr/local/sbin/pr-hygiene-backup", permissions = "0755", content = file("${path.module}/files/backup.sh") },
+      { path = "/etc/systemd/system/pr-hygiene-bootstrap.service", permissions = "0644", content = local.unit_bootstrap },
+      { path = "/etc/systemd/system/docker.service.d/pr-hygiene-mount.conf", permissions = "0644", content = local.dropin_mount },
+      { path = "/etc/systemd/system/nginx.service.d/pr-hygiene-mount.conf", permissions = "0644", content = local.dropin_mount },
       { path = "/etc/systemd/system/pr-hygiene-tls.service", permissions = "0644", content = local.unit_tls },
       { path = "/etc/systemd/system/pr-hygiene-backup.service", permissions = "0644", content = local.unit_backup },
       { path = "/etc/systemd/system/pr-hygiene-backup.timer", permissions = "0644", content = local.timer_backup },
     ]
     runcmd = [
-      ["snap", "install", "aws-cli", "--classic"],
-      ["/usr/local/sbin/pr-hygiene-bootstrap"],
+      ["systemctl", "daemon-reload"],
+      ["systemctl", "enable", "pr-hygiene-bootstrap.service"],
+      ["systemctl", "start", "--no-block", "pr-hygiene-bootstrap.service"],
     ]
   }
 

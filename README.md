@@ -52,12 +52,14 @@ its own volume. The instance has no SSH open; use Session Manager.
 |---|---|
 | `/srv/pr-hygiene/` | The data volume. Survives the instance |
 | `/srv/pr-hygiene/data/` | The database (`/data` in the container) |
-| `/srv/pr-hygiene/deploy/image` | The image now deployed, by digest |
+| `/srv/pr-hygiene/deploy/image` | The last image that became ready, by digest: what runs, what a rollback returns to, what a new host starts |
 | `/srv/pr-hygiene/letsencrypt/` | The TLS certificate (`/etc/letsencrypt` links here) |
 | `/etc/pr-hygiene/` | Compose file, nginx configuration, `host.env` |
 | `/usr/local/sbin/pr-hygiene-*` | `bootstrap`, `deploy`, `tls`, `backup` |
 
-The host's configuration is delivered at first boot. Changing it in
+The host's configuration is delivered at first boot and applied by
+`pr-hygiene-bootstrap.service`, which retries until it has succeeded once
+(`journalctl -u pr-hygiene-bootstrap`). Changing it in
 `modules/pr-hygiene/` replaces the instance: the new one mounts the same
 volume, keeps the address and the certificate, and starts the same image.
 That costs a few minutes of downtime.

@@ -17,7 +17,7 @@ live="/etc/letsencrypt/live/$PRH_HOSTNAME"
 if [ ! -s "$live/fullchain.pem" ]; then
   certbot certonly --non-interactive --agree-tos --register-unsafely-without-email \
     --webroot -w /var/www/acme -d "$PRH_HOSTNAME" \
-    --deploy-hook 'systemctl reload nginx'
+    --deploy-hook 'systemctl reload-or-restart nginx'
 fi
 
 install -m 0644 /etc/pr-hygiene/nginx-tls.conf /etc/nginx/conf.d/pr-hygiene-tls.conf
@@ -25,4 +25,6 @@ if ! nginx -t; then
   rm -f /etc/nginx/conf.d/pr-hygiene-tls.conf
   exit 1
 fi
-systemctl reload nginx
+# Not plain reload: if nginx is down (it could not load this certificate
+# earlier), a reload would fail on every retry.
+systemctl reload-or-restart nginx

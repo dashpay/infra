@@ -10,7 +10,10 @@ server {
 
 server {
     # HTTP/1.1 only. HTTP/2 stays off until Ubuntu's nginx carries the fix
-    # for the HTTP/2 vulnerability of November 2026; then add "http2 on;".
+    # for the HTTP/2 vulnerability of November 2026. To turn it on then,
+    # check the installed version first (nginx -v): Ubuntu 24.04 ships 1.24,
+    # where it is "listen 443 ssl http2;". The separate "http2 on;" line
+    # exists only from 1.25.1. Run nginx -t before reloading.
     listen 443 ssl;
     server_name ${hostname};
     # Set per server: Ubuntu's nginx.conf already sets it for the whole

@@ -18,17 +18,22 @@ resource "aws_ecr_repository" "this" {
   tags = local.tags
 }
 
+# Tagged images are never expired. A lifecycle rule cannot tell which image
+# is deployed or is the one to roll back to, and a replacement host has to
+# pull the deployed one again. Every pushed image is tagged with its commit,
+# at a few tens of megabytes each; prune by hand if it ever matters.
 resource "aws_ecr_lifecycle_policy" "this" {
   repository = aws_ecr_repository.this.name
 
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep the newest 20 images"
+      description  = "Remove untagged images after 14 days"
       selection = {
-        tagStatus   = "any"
-        countType   = "imageCountMoreThan"
-        countNumber = 20
+        tagStatus   = "untagged"
+        countType   = "sinceImagePushed"
+        countUnit   = "days"
+        countNumber = 14
       }
       action = { type = "expire" }
     }]
@@ -54,7 +59,10 @@ resource "aws_ssm_document" "deploy" {
       action = "aws:runShellScript"
       name   = "deploy"
       inputs = {
-        timeoutSeconds = "300"
+        # The script's own worst case is 420 s, rollback included (its
+        # header has the sum). The deadline stays above that so a rollback
+        # is never cut off.
+        timeoutSeconds = "600"
         # The pattern above admits hex and a colon only; the script checks
         # it again.
         runCommand = ["/usr/local/sbin/pr-hygiene-deploy '{{ digest }}'"]
