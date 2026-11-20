@@ -8,11 +8,10 @@ terraform {
     }
   }
 
-  # State for the shared, permanent services (dashpay/infra#21). The bucket
-  # is versioned; locking uses a lock file in the bucket itself.
+  # The bucket is versioned; locking uses a lock file in the bucket itself.
   backend "s3" {
     bucket       = "dash-terraform-state-854439639386"
-    key          = "dash-infra/terraform.tfstate"
+    key          = "dash-infra/services.tfstate"
     region       = "us-east-1"
     use_lockfile = true
   }
@@ -24,8 +23,8 @@ provider "aws" {
   default_tags {
     tags = {
       ManagedBy = "terraform"
-      Project   = "dash-infra"
       Source    = "dashpay/infra"
+      Stack     = "services"
     }
   }
 }
