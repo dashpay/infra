@@ -17,7 +17,9 @@ One configuration, one environment, one state.
 
 ## Running it
 
-Terraform 1.10 or later, with credentials for `dashdev` (`854439639386`).
+Terraform 1.10 or later, with credentials for `dashdev` (`854439639386`). The lock
+file carries hashes for Windows, Linux (x86-64 and ARM64) and macOS on Apple
+silicon; add others with `terraform providers lock -platform=…`.
 
 ```sh
 cd terraform
