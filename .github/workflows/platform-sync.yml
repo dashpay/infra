@@ -1,0 +1,53 @@
+name: Platform sync
+
+# Replays Dash Platform from genesis on testnet and mainnet, on the sync host.
+# The job only asks for the run and waits; see platform-sync/README.md.
+
+on:
+  schedule:
+    # Nightly. A night on which no new Drive tag was published is skipped by the host.
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+    inputs:
+      network:
+        description: Network to replay
+        type: choice
+        options: [both, testnet, mainnet]
+        default: both
+      image:
+        description: "Drive image (dashpay/drive:<tag> or a ghcr.io/dashpay image), or auto for the newest published tag"
+        default: auto
+      tenderdash_image:
+        description: "Tenderdash image (dashpay/tenderdash:<tag>). Empty: the one that Drive release ships with"
+        default: ""
+      force:
+        description: Replay even if this image already passed
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: platform-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Replay from genesis
+    runs-on: [self-hosted, platform-sync]
+    # A replay takes hours. Cancelling the job stops the waiting, not the replay.
+    timeout-minutes: 1320
+    env:
+      NETWORK: ${{ inputs.network || 'both' }}
+      IMAGE: ${{ inputs.image || 'auto' }}
+      TENDERDASH_IMAGE: ${{ inputs.tenderdash_image }}
+      FORCE: ${{ inputs.force && '--force' || '' }}
+    steps:
+      - name: Request the replay and wait for the result
+        run: |
+          case "$NETWORK" in
+            both) nets="--network testnet --network mainnet" ;;
+            testnet|mainnet) nets="--network $NETWORK" ;;
+            *) echo "unknown network: $NETWORK" >&2; exit 2 ;;
+          esac
+          exec python3 /spool/bin/request.py $nets --image "$IMAGE" --tenderdash-image "$TENDERDASH_IMAGE" $FORCE

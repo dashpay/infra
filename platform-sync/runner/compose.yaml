@@ -1,0 +1,32 @@
+# The GitHub Actions runner that links the sync host to this repository.
+#
+# It is deliberately weak. It has no Docker socket, no capabilities and no
+# secrets. The only things it can do on the host are write a request file and
+# read status files; platform_sync.py validates every request before acting.
+name: platform-sync-runner
+services:
+  runner:
+    # The organization's pinned self-hosted runner image, already on the host.
+    image: ${RUNNER_IMAGE:?set RUNNER_IMAGE in .env to the pinned runner image id}
+    pull_policy: never
+    container_name: platform-sync-runner
+    init: true
+    user: "1001:1001"
+    environment:
+      RUNNER_MANUALLY_TRAP_SIG: "1"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    cpus: 1
+    mem_limit: 2g
+    pids_limit: 512
+    logging:
+      driver: local
+      options: { max-size: "10m", max-file: "3" }
+    volumes:
+      - /srv/platform-sync/runner/registration:/runner
+      - /srv/platform-sync/runner/work:/work
+      - /srv/platform-sync/spool/requests:/spool/requests
+      - /srv/platform-sync/spool/status:/spool/status:ro
+      - /opt/platform-sync/request.py:/spool/bin/request.py:ro

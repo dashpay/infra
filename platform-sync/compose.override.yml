@@ -1,0 +1,40 @@
+# Applied on top of dashmate's own compose files for the platform-sync stacks.
+# - Data lives in /srv/platform-sync (a fixed-size filesystem), never on the root disk.
+# - Nothing is published except Tenderdash RPC and metrics on loopback.
+# - Logs and resources are capped.
+x-sync-logging: &sync-logging
+  driver: local
+  options:
+    max-size: "50m"
+    max-file: "4"
+    compress: "true"
+
+services:
+  core:
+    ports: !override []
+    logging: *sync-logging
+    cpus: 4
+    mem_limit: 10g
+  drive_abci:
+    ports: !override []
+    logging: *sync-logging
+    cpus: 6
+    mem_limit: 12g
+  drive_tenderdash:
+    ports: !override
+      - 127.0.0.1:${SYNC_TD_RPC_HOSTPORT:?err}:${PLATFORM_DRIVE_TENDERDASH_RPC_PORT:?err}
+      - 127.0.0.1:${SYNC_TD_METRICS_HOSTPORT:?err}:${PLATFORM_DRIVE_TENDERDASH_METRICS_PORT:?err}
+    logging: *sync-logging
+    cpus: 4
+    mem_limit: 8g
+
+volumes:
+  core_data:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "/srv/platform-sync/data/${CONFIG_NAME:?err}/core" }
+  drive_abci_data:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "/srv/platform-sync/data/${CONFIG_NAME:?err}/drive" }
+  drive_tenderdash:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "/srv/platform-sync/data/${CONFIG_NAME:?err}/tenderdash" }
