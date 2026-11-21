@@ -14,6 +14,7 @@ One configuration, one environment, one state.
 | `terraform/pr-hygiene.tf` | The PR Hygiene service (#90) |
 | `modules/github-oidc-role/` | An IAM role for GitHub Actions jobs, pinned to exact subjects |
 | `modules/pr-hygiene/` | The PR Hygiene host and everything around it |
+| `docs/devnet-platform-dr/` | Runbook, tools and results for backing up and restoring Platform on a console devnet (#27). No Terraform |
 
 ## Running it
 
