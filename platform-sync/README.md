@@ -109,8 +109,24 @@ To grow the disk image: `truncate -s <new>G /srv/platform-sync.img`,
 
 The host is on a satellite link, so the stacks are set up to move as
 little as possible, and every run records what it moved (`bytes` in the
-result: Tenderdash p2p from its metrics, Core from `getnettotals`, and the
-compressed image size if it was downloaded).
+result and in `following`):
+
+| Field | What it counts |
+|---|---|
+| `internetRx`, `internetTx` | Everything the stack exchanged with the internet, Core and Platform together, counted by the kernel. This is the figure to trust |
+| `image` | Compressed size of the Drive image, if this run downloaded it |
+| `platformRx`, `platformTx` | Tenderdash p2p message sizes from its metrics. Smaller than the wire traffic (see below), and on mainnet they are traffic with the local observer |
+| `coreRx`, `coreTx` | Core p2p from `getnettotals`. On mainnet this is traffic with the local observer |
+
+The internet figure comes from two counting rules per network that the
+daemon keeps in Docker's `DOCKER-USER` chain (comment
+`platform-sync-<network>-in` / `-out`, no target): bytes forwarded between
+the stack's subnet and anything outside `172.16.0.0/12`. Tenderdash's own
+byte metrics are not used for it. They count message sizes: on 2026-11-21
+a node following the tip moved 3 times (up) and 15 times (down) what the
+metrics said, measured per TCP socket (the likely reason is the encrypted
+connection's fixed 1 kB frames; not confirmed). They also book each
+received message a second time as "sent" under an empty `peer_id`.
 
 - **mainnet**: both chains come from the mainnet observer that already runs
   on this host, and from nowhere else. Core is started with `-connect=`, and
@@ -120,7 +136,21 @@ compressed image size if it was downloaded).
   chain: nothing from the mainnet stack's subnet is forwarded outside Docker's
   private range. A mainnet replay uses no internet data beyond the image.
 - **testnet**: there is no local source, so the blocks come from the public
-  network: about 3 GB for a replay at height 720,000, growing with the chain.
+  network. Two costs:
+  - **A replay**: 1.6 GB of block messages at height 719,000 (first run,
+    2026-11-20), growing with the chain. That run predates the internet
+    counters; its wire total was below 2.9 GB. `internetRx` of the next
+    run is the exact figure.
+  - **Following the tip between runs** costs more over a month than the
+    replays do, and it grows with the number of Tenderdash peers. With
+    dashmate's default of 30 outgoing peers the stack moved about 3.0 GB
+    up and 1.0 GB down a day, a third of the upload being answers to
+    peer-exchange requests. `install.sh` therefore sets
+    `maxOutgoingConnections` to 4 (`maxConnections` 8): measured right
+    after, 0.32 GB up and 0.19 GB down a day for the whole stack, Core
+    included (five-minute samples on 2026-11-21, a quiet hour on testnet).
+    Whether four peers slow a replay down has not been measured yet; the
+    first one ran at 85 blocks a second with 30.
 
 ## Operating it
 

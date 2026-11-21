@@ -40,16 +40,29 @@ def progress_line(net, st):
         bits.append(f"{st['blocksPerSecond']} blocks/s")
     if st.get("etaSeconds") is not None:
         bits.append(f"about {fmt_duration(st['etaSeconds'])} left")
-    if (run.get("bytes") or {}).get("platformRx") is not None:
-        bits.append(f"{fmt_bytes(run['bytes']['platformRx'])} received")
+    received = received_bytes(run.get("bytes"), image=False)
+    if received is not None:
+        bits.append(f"{fmt_bytes(received)} received")
     return ", ".join(bits)
+
+
+def received_bytes(b, image=True):
+    """What a run downloaded from the internet: the firewall count for the stack, plus the image.
+
+    Results written before the firewall count existed fall back to the p2p message sizes.
+    """
+    if not b:
+        return None
+    keys = ("internetRx",) if b.get("internetRx") is not None else ("platformRx", "coreRx")
+    if not any(b.get(k) is not None for k in keys):
+        return None
+    return sum(b.get(k) or 0 for k in keys + (("image",) if image else ()))
 
 
 def summary_row(net, r):
     img = r.get("image") or {}
-    b = r.get("bytes") or {}
     rev = (img.get("revision") or "")[:10]
-    total = sum(v for k, v in b.items() if k in ("platformRx", "coreRx", "image")) if b else None
+    total = received_bytes(r.get("bytes"))
     return (f"| {net} | **{r.get('result')}** | `{rev or img.get('ref') or r.get('requestedImage')}` | "
             f"{r.get('height') or '–'} | {fmt_duration(r.get('durationSeconds'))} | {fmt_bytes(total)} | "
             f"{r.get('reason') or ''} |")

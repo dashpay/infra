@@ -183,10 +183,15 @@ def validate_request(req, network):
 
 
 def sum_p2p_bytes(metrics_text):
-    """(received, sent) summed over peers from a Prometheus metrics page."""
+    """(received, sent) message bytes summed over peers from a Prometheus metrics page.
+
+    Series with an empty peer_id are left out: Tenderdash 2.0.0-dev.3 books every
+    received message a second time there as "sent" (to its own reactor). These are
+    message sizes, not bytes on the wire; see internet_counters for the latter.
+    """
     rx = tx = 0.0
     for line in metrics_text.splitlines():
-        if line.startswith("#") or " " not in line:
+        if line.startswith("#") or " " not in line or 'peer_id=""' in line:
             continue
         name, value = line.rsplit(" ", 1)
         name = name.split("{", 1)[0]
@@ -198,6 +203,28 @@ def sum_p2p_bytes(metrics_text):
         except ValueError:
             pass
     return int(rx), int(tx)
+
+
+# Docker's private range on this host. Traffic that stays inside it (other containers,
+# the mainnet observer) is not internet traffic.
+LOCAL_RANGE = "172.16.0.0/12"
+
+
+def counting_rules(subnet, tag):
+    """The two rules without a target that count a stack's internet traffic."""
+    return {"internetTx": ["-s", subnet, "!", "-d", LOCAL_RANGE, "-m", "comment", "--comment", f"{tag}-out"],
+            "internetRx": ["-d", subnet, "!", "-s", LOCAL_RANGE, "-m", "comment", "--comment", f"{tag}-in"]}
+
+
+def parse_rule_bytes(listing, tag):
+    """Byte counters of the counting rules, from `iptables -v -S DOCKER-USER`."""
+    out = {}
+    for line in listing.splitlines():
+        which = re.search(r'--comment "?%s-(in|out)"?(\s|$)' % re.escape(tag), line)
+        count = re.search(r"\s-c \d+ (\d+)(\s|$)", line)
+        if which and count:
+            out["internetRx" if which.group(1) == "in" else "internetTx"] = int(count.group(1))
+    return out
 
 
 def rate(samples, window=600):
@@ -368,9 +395,32 @@ class Sync:
                        stateFreeGiB=round(m.free / g, 2))
         return out
 
+    def internet_counters(self):
+        """Bytes the whole stack exchanged with the internet, counted by the kernel.
+
+        Two rules in Docker's DOCKER-USER chain count what is forwarded between the
+        stack's subnet and anything outside Docker's private range. They are appended,
+        so on mainnet they sit behind the REJECT rule and stay at zero. The rules are
+        put back when missing (a reboot or a firewall reload empties the chain).
+        """
+        subnet = parse_env(self.env_file).get("DOCKER_NETWORK_SUBNET")
+        if not subnet:
+            return {}
+        tag = f"platform-sync-{self.net}"
+        for rule in counting_rules(subnet, tag).values():
+            if sh(["iptables", "-w", "5", "-C", "DOCKER-USER", *rule], check=False, timeout=30).returncode != 0:
+                sh(["iptables", "-w", "5", "-A", "DOCKER-USER", *rule], check=False, timeout=30)
+        r = sh(["iptables", "-w", "5", "-v", "-S", "DOCKER-USER"], check=False, timeout=30)
+        return parse_rule_bytes(r.stdout or "", tag) if r.returncode == 0 else {}
+
     def counters(self):
-        """Cumulative bytes: Tenderdash p2p from its metrics, Core from getnettotals."""
+        """Cumulative bytes: the stack's internet traffic from the firewall counters,
+        Tenderdash p2p messages from its metrics, Core p2p from getnettotals."""
         out = {}
+        try:
+            out.update(self.internet_counters())
+        except (OSError, subprocess.SubprocessError):
+            pass
         try:
             out["platformRx"], out["platformTx"] = sum_p2p_bytes(
                 http(self.n["td_metrics"], timeout=8)[2].decode("utf-8", "replace"))
@@ -613,7 +663,7 @@ class Sync:
         self.state["run"] = run
         self.state["phase"] = "starting"
         self.state.pop("following", None)
-        core_before = {k: v for k, v in self.counters().items() if k.startswith("core")}
+        core_before = {k: v for k, v in self.counters().items() if k.startswith(("core", "internet"))}
         self.compose("rm", "--stop", "--force", *PLATFORM_SERVICES, check=False)
         sh(["docker", "volume", "rm", "--force", f"{self.project}_drive_abci_data",
             f"{self.project}_drive_tenderdash"], check=False)
@@ -632,7 +682,8 @@ class Sync:
         run["startedAt"] = iso()
         run["tenderdashImage"] = (self.inspect("drive_tenderdash") or {}).get("image")
         self.samples.clear()
-        self.last_counters = {"platformRx": 0, "platformTx": 0, **core_before}  # fresh containers count from zero
+        # Fresh containers count from zero; Core and the firewall counters carry on.
+        self.last_counters = {**core_before, "platformRx": 0, "platformTx": 0}
         self.state["phase"] = "syncing"
         self.state["progress_at"] = time.time()
         self.state["progress_height"] = 0

@@ -52,8 +52,24 @@ class Helpers(unittest.TestCase):
             'tenderdash_p2p_peer_receive_bytes_total{chain_id="x",peer_id="a",message_type="b"} 1000',
             'tenderdash_p2p_peer_receive_bytes_total{chain_id="x",peer_id="c",message_type="b"} 2.5e+03',
             'tenderdash_p2p_peer_send_bytes_total{chain_id="x",peer_id="a",message_type="b"} 40',
+            # Tenderdash books received messages again as "sent" with no peer: not traffic.
+            'tenderdash_p2p_peer_send_bytes_total{chain_id="x",peer_id="",message_type="b"} 3500',
             "tenderdash_p2p_peers 2", "garbage"])
         self.assertEqual(ps.sum_p2p_bytes(page), (3500, 40))
+
+    def test_parse_rule_bytes(self):
+        tag = "platform-sync-testnet"
+        listing = "\n".join([
+            "-N DOCKER-USER",
+            "-A DOCKER-USER -s 172.30.25.0/24 ! -d 172.16.0.0/12 -c 454651 27531554 -j REJECT --reject-with icmp-net-prohibited",
+            "-A DOCKER-USER -s 172.30.24.0/24 ! -d 172.16.0.0/12 -m comment --comment platform-sync-testnet-out -c 12 3456",
+            '-A DOCKER-USER ! -s 172.16.0.0/12 -d 172.30.24.0/24 -m comment --comment "platform-sync-testnet-in" -c 9 7890',
+            "-A DOCKER-USER -s 172.30.25.0/24 ! -d 172.16.0.0/12 -m comment --comment platform-sync-mainnet-out -c 1 1"])
+        self.assertEqual(ps.parse_rule_bytes(listing, tag), {"internetTx": 3456, "internetRx": 7890})
+        self.assertEqual(ps.parse_rule_bytes("-N DOCKER-USER", tag), {})
+        rules = ps.counting_rules("172.30.24.0/24", tag)
+        self.assertEqual(rules["internetTx"][:4], ["-s", "172.30.24.0/24", "!", "-d"])
+        self.assertEqual(rules["internetRx"][-1], tag + "-in")
 
     def test_rate(self):
         self.assertIsNone(ps.rate([(0, 10)]))

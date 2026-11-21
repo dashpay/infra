@@ -63,6 +63,10 @@ done
 dm config set docker.network.subnet "$TESTNET_SUBNET" --config=testnet
 dm config set docker.network.subnet "$MAINNET_SUBNET" --config=mainnet
 dm config set core.docker.commandArgs '["-dbcache=2048"]' --config=testnet
+# testnet has no local source. Each Tenderdash peer costs about 100 MB up and 35 MB down a day
+# while the node follows the tip (measured 2026-11-21 with dashmate's default of 30), so keep few.
+dm config set platform.drive.tenderdash.p2p.maxOutgoingConnections 4 --config=testnet
+dm config set platform.drive.tenderdash.p2p.maxConnections 8 --config=testnet
 # mainnet takes both chains from the observer on this host and from nowhere else.
 observer_id=$(curl -fsS "$OBSERVER_TD_RPC/status" | python3 -c 'import sys,json; r=json.load(sys.stdin); r=r.get("result",r); print(r["node_info"]["id"])')
 dm config set core.docker.commandArgs "[\"-connect=$MAINNET_GATEWAY:9999\",\"-dbcache=4096\"]" --config=mainnet
