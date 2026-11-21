@@ -48,9 +48,12 @@ resource "aws_instance" "mainnet_quorum_recovery" {
   # The image taken of mainnet-quorum-server on 2026-10-05
   # (mainnet-quorum-access-recovery-20261005), owned by this account. It
   # holds the server as it was before the update to 0.7.0. On this host that
-  # old binary answered /health but returned no quorums, so another host
-  # launched from the image must be checked on /quorums before it serves:
-  # see the README.
+  # old binary answered /health but returned no quorums, and the target
+  # group checks only /health. So the order for any host launched from this
+  # image is: launch it, update its server and check that /quorums returns
+  # the current lists, and only then point serving_instance_id
+  # (mainnet.tf) at it, which registers it with the load balancer. Never
+  # launch and register in the same apply. The README has the steps.
   ami = "ami-01e626ed8a026c719"
 
   instance_type = "t3.micro"

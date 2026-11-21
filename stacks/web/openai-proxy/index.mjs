@@ -17,7 +17,10 @@ export async function handler(event) {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${openAIAPIKey.Parameter.Value}`
         },
-        body: event.body
+        // A function URL hands over a body with a binary content type in base64.
+        body: event.isBase64Encoded && event.body
+            ? Buffer.from(event.body, 'base64').toString('utf8')
+            : event.body
     };
 
     try {
@@ -26,8 +29,9 @@ export async function handler(event) {
         const data = await res.json();
         console.log('Received response');
 
+        // OpenAI's own status, so a caller can tell a 429 or a 400 from an answer.
         const response = {
-            statusCode: 200,
+            statusCode: res.status,
             body: JSON.stringify(data),
         };
 

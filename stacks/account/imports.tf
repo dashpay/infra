@@ -49,16 +49,30 @@ import {
 
 # --- users
 
+# Pinned to what existed at adoption (2026-11-20). Driven by local.users itself,
+# a user or attachment added later would get an import of something that does
+# not exist yet, and the plan would fail instead of creating it.
+locals {
+  adopted_users = ["daniel", "quantum", "vivek", "gitlab-runner"]
+  adopted_user_policy_attachments = [
+    "daniel/AdministratorAccess",
+    "quantum/AdministratorAccess",
+    "gitlab-runner/AdministratorAccess",
+    "gitlab-runner/AmazonEC2FullAccess",
+    "gitlab-runner/AmazonS3FullAccess",
+  ]
+}
+
 import {
-  for_each = local.users
+  for_each = toset(local.adopted_users)
   to       = aws_iam_user.this[each.key]
   id       = each.key
 }
 
 import {
-  for_each = local.user_policy_attachments
+  for_each = toset(local.adopted_user_policy_attachments)
   to       = aws_iam_user_policy_attachment.this[each.key]
-  id       = "${each.value.user}/arn:aws:iam::aws:policy/${each.value.policy}"
+  id       = "${split("/", each.key)[0]}/arn:aws:iam::aws:policy/${split("/", each.key)[1]}"
 }
 
 import {

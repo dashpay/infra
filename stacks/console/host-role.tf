@@ -1,7 +1,13 @@
 # The status host's role, `dash-status-server`.
 #
-# The console's agent container is the only process that uses it; the web
-# container has no cloud access at all. The role is what lets the agent find
+# The console's agent container is the process that is meant to use it.
+# Nothing enforces that: the instance allows two metadata hops (host.tf), so
+# every container on the host, the public web container included, can reach
+# the metadata service and read this role's credentials (checked 2026-11-21:
+# all five containers get an IMDSv2 token). The host has no firewall rule
+# against it and the containers' network is defined in `dashpay/status`, not
+# here. Until that is fixed there, treat a compromise of any container on the
+# host as a compromise of this role. The role is what lets the agent find
 # hosts, get its SSH key onto them, keep the engine's records, and build and
 # remove console devnets. It is the console's whole reach into AWS, so it is
 # written out in full here, exactly as it was found on 2026-11-20.
@@ -147,9 +153,11 @@ resource "aws_iam_role_policy" "status_agent" {
         Resource = "arn:aws:ssm:${local.region}::parameter/aws/service/canonical/ubuntu/server/*"
       },
 
-      # Instances may be launched only into the devnet subnet, with the
-      # devnet security group and the agent's key pair (devnets.tf). This is
-      # what keeps the console from launching anything anywhere else.
+      # Instances may be launched only into the devnet subnet and with the
+      # devnet security group (devnets.tf). This is what keeps the console
+      # from launching anything anywhere else. The key pair is limited only
+      # when the request names one: the agent's key pair is the only one
+      # allowed, but a launch with no KeyName passes this statement too.
       {
         Sid    = "DevnetLaunchPlacement"
         Effect = "Allow"
@@ -201,11 +209,20 @@ resource "aws_iam_role_policy" "status_agent" {
         Action   = ["ec2:AllocateIpamPoolCidr", "ec2:ReleaseIpamPoolAllocation", "ec2:GetIpamPoolAllocations"]
         Resource = data.aws_vpc_ipam_pool.owned.arn
       },
+      # An address must carry the ownership tag from the moment it exists, so
+      # the agent can always release what it allocated. dash-network-go sends
+      # the tags in AllocateAddress itself (internal/provision/ipam.go).
+      #
+      # The pool is not limited here: AllocateAddress could also take an
+      # address from Amazon's pool. dash-network-go only ever asks the owned
+      # IPAM pool (IpamPoolId); the statement above is what limits the CIDR
+      # calls to that pool.
       {
-        Sid      = "DevnetAddresses"
-        Effect   = "Allow"
-        Action   = ["ec2:AllocateAddress"]
-        Resource = ["*"]
+        Sid       = "DevnetAddresses"
+        Effect    = "Allow"
+        Action    = ["ec2:AllocateAddress"]
+        Resource  = ["*"]
+        Condition = { StringEquals = { "aws:RequestTag/dashnet:managed-by" = "dash-network-go" } }
       },
       {
         Sid       = "DevnetAddressesOwned"
@@ -214,11 +231,24 @@ resource "aws_iam_role_policy" "status_agent" {
         Resource  = "*"
         Condition = local.devnet_owned
       },
+      # The instance an owned address goes to must be a console devnet node,
+      # so the agent cannot move an address onto anything else. dash-network-go
+      # associates by instance id with AllowReassociation false.
       {
-        Sid      = "DevnetAssociateTarget"
+        Sid       = "DevnetAssociateTarget"
+        Effect    = "Allow"
+        Action    = ["ec2:AssociateAddress"]
+        Resource  = ["${local.ec2_arn}:instance/*"]
+        Condition = local.devnet_owned
+      },
+      # The instance's network interface is part of the same request. The
+      # engine does not tag interfaces, so they cannot be limited by tag; an
+      # association by interface id alone is therefore still possible.
+      {
+        Sid      = "DevnetAssociateInterface"
         Effect   = "Allow"
         Action   = ["ec2:AssociateAddress"]
-        Resource = ["${local.ec2_arn}:instance/*", "${local.ec2_arn}:network-interface/*"]
+        Resource = ["${local.ec2_arn}:network-interface/*"]
       },
 
       # --- Console devnets: remove -----------------------------------------

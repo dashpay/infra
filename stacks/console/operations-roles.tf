@@ -13,7 +13,11 @@
 # 2026-09-28. Both roles were last used that day. Since then the agent on
 # the status host runs `dashnet` itself, with the host's role.
 #
-# Each role is one network and nothing else. They are not built with
+# Each role is one network for the engine's table items and the bucket's
+# objects. Not for EC2 reads: ec2:DescribeInstances is limited by region
+# only, so either role can list every instance of every network in the
+# region. Do not treat these roles as a network boundary for what they can
+# see. They are not built with
 # modules/github-oidc-role: these carry a policy name of their own and are
 # adopted as they are.
 

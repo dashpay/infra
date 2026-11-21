@@ -140,7 +140,11 @@ resource "aws_instance" "dnsseed" {
     # effect of an unrelated apply.
     # user_data: read on first boot only. Changing it on a running host
     # stops the host and changes nothing on it. To roll out a change, replace
-    # the seeder: terraform apply -replace='aws_instance.dnsseed["testnet"]'.
+    # the seeder, in two applies (README, "The seeders"): first set
+    # disable_api_termination = false and apply, because AWS refuses to
+    # terminate a protected instance and the provider does not lift the
+    # protection itself; then terraform apply
+    # -replace='aws_instance.dnsseed["testnet"]', and set it back to true.
     ignore_changes = [ami, user_data]
   }
 }

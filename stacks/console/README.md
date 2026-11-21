@@ -54,8 +54,12 @@ hand between February and October 2026 and is adopted here as it runs.
 ## Rebuild from nothing
 
 Needs the `account` stack (address pool, identity provider) and the `dns`
-stack (zone). The host also needs the testnet VPC to exist; if that is gone
-too, point `lookups.tf` at another public subnet first.
+stack (zone). The host also needs the testnet VPC to exist. If that is gone
+too, change all three lookups in `lookups.tf` before the apply: `aws_vpc.testnet`
+to the replacement VPC, `aws_subnet.testnet_public2` to a public subnet in it,
+and `aws_security_group.testnet_ssh` to a group in that VPC that opens port 22
+(create one by hand if there is none; it is the only thing that opens the
+host's SSH port).
 
 Delete `imports.tf`, then `terraform apply`.
 
@@ -81,7 +85,7 @@ deleted with the instance. Termination protection is off.
 
 | Path | What | If it is lost |
 |---|---|---|
-| `/srv/dash-status/agent/id_ed25519` | The agent's SSH key. Every enrolled testnet node and every devnet node trusts it | A new agent makes itself a new key. **Testnet** should heal by itself: the agent pushes its key through EC2 Instance Connect to a host that refuses it, and its role allows that for `DashNetwork=testnet` (read from the code, not tried). **Running devnets do not**: the role does not allow it for devnet tags, so the agent is locked out of them until someone adds its new key on each node another way. Put the new public key into `devnets.tf`, or new devnets are launched with the old one |
+| `/srv/dash-status/agent/id_ed25519` | The agent's SSH key. Every enrolled testnet node and every devnet node trusts it | A new agent makes itself a new key. **Testnet** should heal by itself: the agent pushes its key through EC2 Instance Connect to a host that refuses it, and its role allows that for `DashNetwork=testnet` (read from the code, not tried). **Running devnets do not**: the role does not allow it for devnet tags, so the agent is locked out of them until someone adds its new key on each node another way. For new devnets, replace the key pair: put the new public key into `devnets.tf`, remove `public_key` from its `ignore_changes` for that one apply (otherwise Terraform ignores the new key and the old one stays), check that the plan replaces `aws_key_pair.status_agent`, apply, then put the `ignore_changes` entry back. Until then new devnets are launched with the old key |
 | `/srv/dash-status/agent/devnets/<name>/` (640 MB) | Each console devnet's plans, lock files, stage records, secrets and the exact `dashnet` binary its plans were made with | The console has nothing left to operate that devnet with: no upgrade, reset or delete. Its instances and addresses have to be found by tag (`dashnet:network`) and removed by hand |
 | `/srv/dash-status/agent/hostkeys.json` | The SSH host key pinned for each instance | Pinned again on first contact, without the earlier check |
 | `/srv/dash-status/data/settings.json` | Who may sign in and with which role, network definitions, thresholds, devnet defaults | The console starts with the defaults in `shared/settings.js`: one admin (`ktechmidas`), testnet, the devnet ids above. Access for everyone else is set again by hand |

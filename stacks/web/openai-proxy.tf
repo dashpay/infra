@@ -58,22 +58,9 @@ resource "aws_lambda_function" "openai_proxy" {
   # The log group first, or the function's first call makes its own.
   depends_on = [aws_cloudwatch_log_group.openai_proxy, aws_iam_role_policy.openai_proxy]
 
-  lifecycle {
-    # Ignored: which zip the function was last given.
-    #
-    # The function runs the package that was copied from the dashevo account
-    # on 2026-11-20. The index.mjs in it is byte for byte the file in
-    # openai-proxy/, but the package was built by the Serverless Framework
-    # and a zip made here never has the same hash (tried with index.mjs alone
-    # and with all seven files of that package). Without this line, adopting
-    # the function would upload new code to it.
-    #
-    # While the line is here, a change to index.mjs is NOT deployed. To
-    # deploy one, delete this block: the next apply uploads the zip built
-    # from openai-proxy/, and the block is not needed again. A function
-    # created from nothing gets that zip either way.
-    ignore_changes = [filename, source_code_hash]
-  }
+  # The code is the zip built from openai-proxy/. Until 2026-11-21 the
+  # function ran the Serverless Framework package copied from dashevo and
+  # this resource ignored the code; the first change to index.mjs replaced it.
 }
 
 # Anyone may call the URL: it has no sign-in. CORS only tells browsers that

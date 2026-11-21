@@ -84,11 +84,18 @@ Needs the `account` stack (address pool) and the `dns` stack (zone
 
 Terraform recreates everything. A new seeder needs nothing but its address:
 it installs Docker, starts the container and has a full list of nodes within
-minutes (under three on 2026-11-20). To replace one that misbehaves:
+minutes (under three on 2026-11-20). To replace one that misbehaves, take
+termination protection off first, in an apply of its own. AWS refuses to
+terminate a protected instance and the provider does not lift the protection
+itself; a `-replace` alone can remove the address association and then fail
+on the termination, leaving the address with no seeder behind it.
 
-```sh
-terraform apply -replace='aws_instance.dnsseed["testnet"]'
-```
+1. In `dnsseed.tf` set `disable_api_termination = false`, then `terraform
+   apply` and check that the plan changes only that attribute.
+2. ```sh
+   terraform apply -replace='aws_instance.dnsseed["testnet"]'
+   ```
+3. Set `disable_api_termination = true` again and apply.
 
 The address stays, so nothing at Cloudflare changes.
 
@@ -116,10 +123,25 @@ synced. Then:
   systemctl start docker`.
 - This path has not been tried.
 
-**The data volume is lost too** (or the whole zone: change
-`local.insight_zone`). Terraform makes a new volume from the image's
-snapshot: the chain as Core had it on 2026-11-20 13:32 UTC. Two things then
-take time, and both were measured when the host was moved on 2026-11-20:
+**The data volume is lost too.** Terraform makes a new volume from the
+image's snapshot: the chain as Core had it on 2026-11-20 13:32 UTC.
+
+**The zone is unavailable** (change `local.insight_zone`). That is two cases:
+
+- *AWS has already deleted the host and the volume.* Same as above: change
+  the zone and apply.
+- *They still exist, in a zone that does not work.* Changing the zone means
+  replacing the instance and the volume, and both are `prevent_destroy`, so
+  Terraform refuses the plan. Keep the old ones as they are (they may come
+  back, and the volume holds the chain): take them out of the state with
+  `terraform state rm aws_instance.insight aws_ebs_volume.insight_data
+  aws_volume_attachment.insight_data`, tag them `retained-zone-outage`, then
+  change the zone and apply. Afterwards `prevent_destroy` protects the new
+  ones exactly as before; it is never taken off. Delete the old instance and
+  volume by hand once the new host serves.
+
+Two things then take time, and both were measured when the host was moved on
+2026-11-20:
 
 1. *A volume made from a snapshot is slow until every block of it has been
    read once.* Until then Core answers too slowly for Insight and most
@@ -141,10 +163,24 @@ take time, and both were measured when the host was moved on 2026-11-20:
    been measured.
 
 On 2026-11-20 the new host was launched at 16:10 UTC and answered like the
-old one at 18:01: **about two hours**, with an image under three hours old. Do not
-point clients at a rebuilt host before `/insight-api/sync` reports the
-current height and a few address and block requests answer in about a
-second.
+old one at 18:01: **about two hours**, with an image under three hours old.
+
+**Keep clients off a rebuilt host until it is ready**, and do that before the
+apply, not after. The same apply that launches the host registers it with
+the existing load balancer (`aws_lb_target_group_attachment.insight` in
+`insight-lb.tf`). Its health check passes long before the host answers
+properly, and a load balancer whose only target is unhealthy sends traffic
+to it anyway, so neither the health check nor a later DNS change keeps
+clients away. In two stages:
+
+1. Apply with the attachment held back:
+   `terraform apply -target=aws_instance.insight -target=aws_volume_attachment.insight_data -target=aws_eip_association.insight`
+   (add the volume when it is new). Nothing is registered with the load
+   balancer.
+2. Warm the volume and wait until `/insight-api/sync` on the host itself
+   (through SSM, `curl localhost:3001/insight-api/sync`) reports the current
+   height and a few address and block requests answer in about a second.
+   Then run a plain `terraform apply`, which registers the host.
 
 **The image and its snapshots are lost as well.** Then nothing restores the
 host. It has to be built by hand (Ubuntu, Docker, the compose file and
