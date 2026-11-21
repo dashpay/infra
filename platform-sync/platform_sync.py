@@ -15,6 +15,7 @@ import datetime as dt
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -122,13 +123,23 @@ def read_json(path, default=None):
 
 
 def write_json(path, obj, mode=0o600):
-    tmp = f"{path}.tmp{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "w") as f:
-        json.dump(obj, f, indent=1, sort_keys=True)
-        f.write("\n")
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
+    """Writes the whole file or nothing. The temporary name cannot be guessed and is
+    created exclusively, so a symlink planted in a directory somebody else may write
+    to (the request spool) is never followed."""
+    tmp = f"{path}.{secrets.token_hex(8)}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f, indent=1, sort_keys=True)
+            f.write("\n")
+            os.fchmod(f.fileno(), mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def parse_env(path):
@@ -153,7 +164,13 @@ def http_json(url, headers=None, timeout=15):
 
 
 def sh(cmd, check=True, timeout=600, **kw):
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
+    except subprocess.TimeoutExpired:
+        # With check=False a timeout is one more way to fail, reported like the others.
+        if check:
+            raise RuntimeError(f"{' '.join(cmd[:4])}… timed out after {timeout} s") from None
+        return subprocess.CompletedProcess(cmd, 124, "", f"timed out after {timeout} s")
     if check and r.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd[:4])}… exited {r.returncode}: {(r.stderr or r.stdout).strip()[-400:]}")
     return r
@@ -225,6 +242,16 @@ def parse_rule_bytes(listing, tag):
         if which and count:
             out["internetRx" if which.group(1) == "in" else "internetTx"] = int(count.group(1))
     return out
+
+
+def find_fatal(text):
+    """(label, the matching log line) for the first fatal marker in a log, or None."""
+    for rx, label in FATAL_LOG:
+        m = rx.search(text)
+        if m:
+            end = text.find("\n", m.end())
+            return label, text[text.rfind("\n", 0, m.start()) + 1:end if end != -1 else len(text)].strip()[:400]
+    return None
 
 
 def rate(samples, window=600):
@@ -444,15 +471,28 @@ class Sync:
         self.last_counters = {**prev, **cur}
 
     def scan_logs(self, since):
+        """(label, log line, complete). `complete` is False when a log could not be read:
+        the caller then keeps its cursor and does not pass the run on this look."""
+        complete = True
         for service in PLATFORM_SERVICES:
             r = sh(["docker", "logs", "--since", since, self.container(service)], check=False, timeout=60)
+            if r.returncode != 0:
+                complete = False
+                continue
             text = (r.stdout or "") + (r.stderr or "")
-            for rx, label in FATAL_LOG:
-                m = rx.search(text)
-                if m:
-                    line = text[text.rfind("\n", 0, m.start()) + 1:text.find("\n", m.end())]
-                    return f"{label}: {line.strip()[:400]}"
-        return None
+            hit = find_fatal(text)
+            if hit:
+                return hit[0], hit[1], complete
+        return None, None, complete
+
+    def platform_stopped(self):
+        """True when no Platform container is running (absent counts as stopped)."""
+        return all(c is None or c["status"] in ("exited", "created", "dead")
+                   for c in (self.inspect(s) for s in PLATFORM_SERVICES))
+
+    def stop_platform(self):
+        self.compose("stop", *PLATFORM_SERVICES, check=False)
+        return self.platform_stopped()
 
     # ---- image resolution -----------------------------------------------
     def resolve_auto(self):
@@ -538,7 +578,8 @@ class Sync:
                     self.write_result({"id": raw["id"], "network": self.net, "result": "refused", "reason": str(e),
                                        "finishedAt": iso()})
                 continue
-            self._unlink(path)
+            # The file is removed by start_run, after the claim is written to the state file.
+            req["_path"] = path
             return req
         return None
 
@@ -566,9 +607,38 @@ class Sync:
 
     def record(self, run):
         self.state["last_request"] = {k: run.get(k) for k in ("id", "result", "reason", "finishedAt")}
-        self.write_result(run)
-        with open(f"{self.root}/state/history-{self.net}.jsonl", "a") as f:
-            f.write(json.dumps(run, sort_keys=True) + "\n")
+        self.state.pop("claim", None)
+        try:
+            self.write_result(run)
+        except OSError as e:
+            # The client waits for this file. Keep the result and try again on every tick.
+            log(f"result of {run['id']} not written yet:", e)
+            self.state["unpublished"] = (self.state.get("unpublished") or [])[-19:] + [dict(run)]
+        try:
+            with open(f"{self.root}/state/history-{self.net}.jsonl", "a") as f:
+                f.write(json.dumps(run, sort_keys=True) + "\n")
+        except OSError as e:
+            log("history not written:", e)
+
+    def retry_pending(self):
+        """What an earlier tick could not finish: results not yet written, services not yet stopped."""
+        left = []
+        for run in self.state.get("unpublished") or []:
+            try:
+                self.write_result(run)
+            except OSError:
+                left.append(run)
+        if left:
+            self.state["unpublished"] = left
+        else:
+            self.state.pop("unpublished", None)
+        if self.state.get("stop_pending"):
+            if self.stop_platform():
+                self.state.pop("stop_pending", None)
+                log("Platform services are stopped now")
+            else:
+                log("Platform services are still not stopped; no request is taken until they are")
+        return not self.state.get("stop_pending")
 
     def reject(self, run, result, reason):
         """Ends a request before anything on the node was touched. The node stays as it is."""
@@ -576,23 +646,34 @@ class Sync:
         log(f"run {run['id']}: {result} ({reason})")
         self.record(run)
 
-    def finish(self, result, reason=None):
-        """Ends a replay that was started."""
+    def finish(self, result, reason=None, detail=None):
+        """Ends a replay that was started.
+
+        `reason` is published (status file, GitHub job summary, status console), so it
+        carries no raw log or command output. That goes in `detail`, which stays in the
+        journal and in the run's evidence directory, both readable by root only.
+        """
         run = self.state["run"]
         run.update(result=result, reason=reason, finishedAt=iso())
         if run.get("startedAt"):
             run["durationSeconds"] = int((parse_iso(run["finishedAt"]) - parse_iso(run["startedAt"])).total_seconds())
-        log(f"run {run['id']}: {result}" + (f" ({reason})" if reason else ""))
+        log(f"run {run['id']}: {result}" + (f" ({reason})" if reason else "") + (f" [{detail}]" if detail else ""))
         if result == "failed":
-            self.save_evidence(run)
+            try:
+                self.save_evidence(run, detail)
+            except Exception as e:  # a full disk must not keep the services running
+                log("evidence not saved:", repr(e)[:300])
             # Stop the Platform services and leave their data where it is,
             # so the failure can be looked at until the next run starts.
-            self.compose("stop", *PLATFORM_SERVICES, check=False)
+            if not self.stop_platform():
+                self.state["stop_pending"] = True
+                log("Platform services did not stop; retrying on every tick")
             self.state["phase"] = "failed"
         elif result == "passed":
             self.state["phase"] = "following"
             self.state["last_passed"] = {k: run.get(k) for k in
-                                         ("id", "image", "finishedAt", "durationSeconds", "height", "bytes")}
+                                         ("id", "image", "tenderdashImage", "tenderdashImageId", "finishedAt",
+                                          "durationSeconds", "height", "bytes")}
             self.state["following"] = {"since": run["finishedAt"], "bytes": {}}
             self.state["following_healthy"] = True
         self.record(run)
@@ -601,9 +682,12 @@ class Sync:
         except Exception as e:
             log("image cleanup failed:", e)
 
-    def save_evidence(self, run):
+    def save_evidence(self, run, detail=None):
         d = f"{self.root}/runs/{self.net}/{run['id']}"
         os.makedirs(d, exist_ok=True)
+        if detail:
+            with open(f"{d}/detail.txt", "w") as f:
+                f.write(detail + "\n")
         for service in PLATFORM_SERVICES:
             r = sh(["docker", "logs", "--tail", "3000", self.container(service)], check=False, timeout=120)
             with open(f"{d}/{service}.log", "w") as f:
@@ -618,6 +702,12 @@ class Sync:
         run = {"id": req["id"], "network": self.net, "requestedImage": req["image"], "requestedAt": iso(),
                "result": None, "reason": None, "bytes": {}}
         log(f"run {run['id']}: requested image {req['image']}")
+        # Claim it on disk before the request file goes: a daemon that dies from here on
+        # still owes this id a result, and writes one when it comes back (see daemon()).
+        self.state["claim"] = dict(run)
+        write_json(self.state_file, self.state)
+        if req.get("_path"):
+            self._unlink(req["_path"])
         if self.hold():
             return self.reject(run, "refused", f"on hold: {self.hold()}")
         for mount in (self.root, self.pdata):
@@ -642,6 +732,12 @@ class Sync:
                    if req["image"] != "auto" else self.resolve_auto())
             image_id, labels, downloaded = self.pull(img["ref"])
             tenderdash = req.get("tenderdash_image") or img.get("tenderdash")
+            if req["image"] == "auto" and not tenderdash:
+                # Without it the run would test this Drive with whatever Tenderdash is installed.
+                raise RuntimeError("the Tenderdash image this release ships with could not be determined ("
+                                   + "; ".join(img.get("notes") or ["no reason recorded"])
+                                   + "); try again or pass tenderdash_image")
+            td_id = None
             if tenderdash:
                 td_id, _, td_downloaded = self.pull(tenderdash)
                 if td_downloaded and td_id not in self.state["pulled"]:
@@ -655,16 +751,30 @@ class Sync:
                         "version": labels.get("org.opencontainers.image.version") or img.get("tag"),
                         "notes": img.get("notes") or []}
         run["bytes"]["image"] = (img.get("compressedBytes") or 0) if downloaded else 0
+        run["tenderdashImageId"] = td_id
         last = self.state.get("last_passed") or {}
+        # Skip only when the same pair is what runs right now: the Drive that passed, and the
+        # Tenderdash of the container that is following (older passes did not record its id).
+        running_td = (self.inspect("drive_tenderdash") or {}).get("image_id")
         if (req["image"] == "auto" and not req["force"] and self.state["phase"] == "following"
-                and self.state.get("following_healthy") and (last.get("image") or {}).get("id") == image_id):
+                and self.state.get("following_healthy") and (last.get("image") or {}).get("id") == image_id
+                and td_id and running_td == td_id):
             return self.reject(run, "skipped", "this image already passed and the node is still following the tip")
-        # From here the old Platform state goes.
+        # Resolving and pulling took time; somebody may have put a hold on the node meanwhile.
+        if self.hold():
+            return self.reject(run, "refused", f"on hold: {self.hold()}")
+        # From here the old Platform state goes. The phase is on disk first, so a daemon
+        # that dies in the middle fails this id when it comes back instead of forgetting it.
         self.state["run"] = run
         self.state["phase"] = "starting"
         self.state.pop("following", None)
+        self.state.pop("claim", None)
+        write_json(self.state_file, self.state)
         core_before = {k: v for k, v in self.counters().items() if k.startswith(("core", "internet"))}
         self.compose("rm", "--stop", "--force", *PLATFORM_SERVICES, check=False)
+        if not self.platform_stopped():
+            # Their data is still mounted by a running service: leave it alone.
+            return self.finish("failed", "the Platform services could not be stopped; their data was not touched")
         sh(["docker", "volume", "rm", "--force", f"{self.project}_drive_abci_data",
             f"{self.project}_drive_tenderdash"], check=False)
         for d in ("drive", "tenderdash"):
@@ -675,10 +785,12 @@ class Sync:
                 shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.unlink(p)
         self.set_sync_env(PLATFORM_DRIVE_ABCI_DOCKER_IMAGE=img["ref"],
                           PLATFORM_DRIVE_TENDERDASH_DOCKER_IMAGE=tenderdash)
+        # The log scan starts before the containers do, so their first lines are read too.
+        self.state["log_scanned"] = iso()
         try:
             self.compose("up", "-d", "--no-deps", *PLATFORM_SERVICES)
         except Exception as e:
-            return self.finish("failed", f"start: {str(e)[:300]}")
+            return self.finish("failed", "the Platform services did not start", detail=str(e)[:600])
         run["startedAt"] = iso()
         run["tenderdashImage"] = (self.inspect("drive_tenderdash") or {}).get("image")
         self.samples.clear()
@@ -687,7 +799,6 @@ class Sync:
         self.state["phase"] = "syncing"
         self.state["progress_at"] = time.time()
         self.state["progress_height"] = 0
-        self.state["log_scanned"] = run["startedAt"]
 
     def watch(self):
         """One look at a running replay. Decides pass or fail."""
@@ -696,10 +807,12 @@ class Sync:
         self.add_bytes(run["bytes"])
         states = {s: self.inspect(s) for s in PLATFORM_SERVICES}
         run["restarts"] = {s: (c or {}).get("restarts") for s, c in states.items()}
-        scan_from, self.state["log_scanned"] = self.state.get("log_scanned") or run["startedAt"], iso()
-        fatal = self.scan_logs(scan_from)
+        scan_from, scan_at = self.state.get("log_scanned") or run["startedAt"], iso()
+        fatal, line, scanned = self.scan_logs(scan_from)
         if fatal:
-            return self.finish("failed", fatal)
+            return self.finish("failed", fatal, detail=line)
+        if scanned:
+            self.state["log_scanned"] = scan_at  # otherwise the next look reads the same stretch again
         for s, c in states.items():
             if c is None:
                 return self.finish("failed", f"{s} container is gone")
@@ -752,6 +865,9 @@ class Sync:
             if mine != theirs:
                 return self.finish("failed", f"block {h} differs from the reference: {mine} vs {theirs}")
             run["compared"] = {"height": h, "blockHash": mine[0], "appHash": mine[1]}
+        if not scanned:
+            log("not passing yet: the logs could not be read on this look")
+            return
         self.finish("passed")
 
     def follow(self):
@@ -763,15 +879,22 @@ class Sync:
             # The state is in memory, so a reboot empties it and the containers start
             # again from block 1. That would be a replay nobody asked for: stop it.
             log(f"the node is at {td['height']}, below the {passed_at} it passed at: state lost, stopping it")
-            self.compose("stop", *PLATFORM_SERVICES, check=False)
+            if not self.stop_platform():
+                self.state["stop_pending"] = True
             self.state["phase"] = "idle"
             self.state["last_request"] = {"id": None, "result": "stopped", "finishedAt": iso(),
                                           "reason": "Platform state was lost (reboot); the next run rebuilds it"}
             return
+        ref = self.reference_height() if td else None
         if run and td:
-            run.update(height=td["height"], referenceHeight=self.reference_height())
+            run.update(height=td["height"], referenceHeight=ref)
         states = {s: self.inspect(s) for s in PLATFORM_SERVICES}
-        self.state["following_healthy"] = bool(td) and all(c and c["status"] == "running" for c in states.values())
+        # Healthy is what lets a night be skipped, so it means "at the tip", not "running".
+        # A reference that cannot be read right now does not count against the node.
+        self.state["following_healthy"] = (
+            bool(td) and td["catching_up"] is False
+            and all(c and c["status"] == "running" for c in states.values())
+            and (ref is None or td["height"] >= ref - self.lim["tip_lag_blocks"]))
         f = self.state.setdefault("following", {"since": iso(), "bytes": {}})
         if self.last_counters is None:
             self.last_counters = self.counters()  # the daemon was restarted: count from here
@@ -835,13 +958,18 @@ class Sync:
         else:
             if phase == "following":
                 self.follow()
-            req = self.next_request()
-            if req:
-                self.start_run(req)
+            if self.retry_pending():
+                req = self.next_request()
+                if req:
+                    self.start_run(req)
         self.publish()
 
     def daemon(self):
         log(f"platform-sync {self.net}: phase {self.state['phase']}, project {self.project}")
+        claim = self.state.get("claim")
+        if claim:
+            self.reject(claim, "failed", "the daemon restarted before this replay started; the node was not "
+                                         "touched, request it again")
         n = 0
         while True:
             try:

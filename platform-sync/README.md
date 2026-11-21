@@ -69,6 +69,18 @@ On failure Drive and Tenderdash are stopped and **their data is left in
 place** until the next run starts or the host reboots; the last 3,000 log
 lines of each are saved under `runs/<network>/<id>/`.
 
+The `reason` of a result is published (status file, job summary, status
+console), so it never carries a container's log lines or `docker compose`
+output. The log line or error behind it is in
+`runs/<network>/<id>/detail.txt` and in the daemon's journal, both readable
+by root only. The one exception is an image that cannot be pulled: that is
+reported with Docker's own error message.
+
+Things the daemon does not give up on: a result file it could not write is
+written again on every tick until it succeeds, services that did not stop
+are stopped again before any new request is taken, and a request the daemon
+had claimed when it died gets a `failed` result when it comes back.
+
 ## Disk and memory
 
 Everything the sync keeps on disk lives in `/srv/platform-sync`, a fixed
@@ -80,7 +92,8 @@ mounted.
 |---|---|---|---|
 | mainnet Core, full with txindex | disk | about 50 GB | about 0.5 GB a month |
 | testnet Core | disk | about 5 GB | slowly |
-| dashmate, runner, logs of failed runs | disk | about 2 GB | bounded |
+| dashmate, logs of failed runs | disk | about 1 GB | bounded |
+| the runner's own files | disk, a separate 3 GiB image | about 0.7 GB | bounded |
 | testnet Platform state (Tenderdash + Drive) | memory, 16 GiB at most | about 5 GB | with the chain; rewritten each run |
 | mainnet Platform state | memory, 8 GiB at most | about 2.5 GB | with the chain; rewritten each run |
 
@@ -195,6 +208,22 @@ read-only view of the status files. `platform_sync.py` reads a request with
 checks the network and the image reference against a fixed pattern before
 Docker sees them (`test_platform_sync.py`). The worst a bad request can do is
 start a replay of an image published by `dashpay`.
+
+What the runner can write on the host has storage of its own, so a job that
+fills it takes nothing from Core, the daemons' state or the results:
+
+| Path on the host | In the runner | Storage |
+|---|---|---|
+| `/srv/platform-sync/spool/requests` | `/spool/requests` | tmpfs, 1 MiB and 64 files. Emptied by a reboot; a request waiting at that moment is lost |
+| `/srv/platform-sync/runner` | `/runner`, `/work` | its own 3 GiB filesystem (`/srv/platform-sync-runner.img`) |
+
+Not bounded: the container's own writable layer (`/tmp`, the home
+directory), which Docker keeps on the host's root filesystem like that of
+every other runner container on this host.
+
+Root writes into the request spool too (`platform_sync.py request`). It
+creates its temporary file exclusively under a random name and never
+follows a link there.
 
 Cancelling the GitHub job stops the waiting, not the replay.
 

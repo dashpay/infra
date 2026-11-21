@@ -1,6 +1,7 @@
 """python3 -m unittest platform-sync/test_platform_sync.py"""
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -76,6 +77,35 @@ class Helpers(unittest.TestCase):
         self.assertEqual(ps.rate([(0, 0), (100, 2000)]), 20)
         # Only the window counts.
         self.assertEqual(ps.rate([(0, 0), (1000, 100), (1300, 3100)], window=600), 10)
+
+    def test_find_fatal(self):
+        log = "ok\nE[1] wrong Block.Header.AppHash. Expected AA, got BB module=consensus\nmore"
+        self.assertEqual(ps.find_fatal(log),
+                         ("AppHash mismatch", "E[1] wrong Block.Header.AppHash. Expected AA, got BB module=consensus"))
+        self.assertEqual(ps.find_fatal("CONSENSUS FAILURE")[0], "Tenderdash consensus failure")
+        self.assertIsNone(ps.find_fatal("all good\n"))
+
+    def test_sh_timeout_is_a_failure_not_an_exception(self):
+        slow = [sys.executable, "-c", "import time; time.sleep(5)"]
+        self.assertEqual(ps.sh(slow, check=False, timeout=0.2).returncode, 124)
+        with self.assertRaises(RuntimeError):
+            ps.sh(slow, timeout=0.2)
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and hasattr(os, "fchmod"), "POSIX only")
+    def test_write_json_never_follows_a_planted_link(self):
+        with tempfile.TemporaryDirectory() as d:
+            victim = os.path.join(d, "victim")
+            with open(victim, "w") as f:
+                f.write("keep")
+            target = os.path.join(d, "spool", "r.json")
+            os.mkdir(os.path.dirname(target))
+            os.symlink(victim, target)  # the final name is a link: it is replaced, not followed
+            ps.write_json(target, {"a": 1}, 0o644)
+            self.assertFalse(os.path.islink(target))
+            self.assertEqual(ps.read_json(target), {"a": 1})
+            with open(victim) as f:
+                self.assertEqual(f.read(), "keep")
+            self.assertEqual(os.listdir(os.path.dirname(target)), ["r.json"])  # no temporary file left
 
     def test_merge(self):
         self.assertEqual(ps.merge({"a": {"b": 1, "c": 2}, "d": 3}, {"a": {"b": 9}}), {"a": {"b": 9, "c": 2}, "d": 3})

@@ -15,6 +15,9 @@ OBSERVER_TD_RPC=${OBSERVER_TD_RPC:-http://127.0.0.1:26657}
 TESTNET_SUBNET=172.30.24.0/24
 MAINNET_SUBNET=172.30.25.0/24
 MAINNET_GATEWAY=172.30.25.1
+# The mounts are "nofail", which also means boot does not wait for them. Docker must:
+# a container that starts first would bind the empty directory underneath instead.
+BEFORE_DOCKER=x-systemd.before=docker.service
 here=$(cd "$(dirname "$0")" && pwd)
 
 dm() { DASHMATE_HOME_DIR=$S/home "$S/dashmate/bin/dashmate" "$@"; }
@@ -27,22 +30,34 @@ if ! mountpoint -q "$S"; then
     mkfs.ext4 -q -m 0 -L platform-sync "$S.img"
   fi
   mkdir -p "$S"
-  grep -q "^$S.img " /etc/fstab || echo "$S.img $S ext4 loop,nofail,noatime 0 2" >> /etc/fstab
+  grep -q "^$S.img " /etc/fstab || echo "$S.img $S ext4 loop,nofail,noatime,$BEFORE_DOCKER 0 2" >> /etc/fstab
   systemctl daemon-reload
   mount "$S"
 fi
-mkdir -p "$S"/{dashmate,home,data,state,runs,bin,dl} "$S"/spool/{requests,status/results} "$S"/ram/{testnet,mainnet}
+mkdir -p "$S"/{dashmate,home,data,state,runs,bin,dl,runner} "$S"/spool/{requests,status/results} "$S"/ram/{testnet,mainnet}
+# What the runner may write gets storage of its own, so that a job which fills it cannot
+# take space from Core, the daemons' state or the results: a small disk filesystem for
+# the runner's own directories, and 1 MiB of memory for the request spool (below).
+if ! mountpoint -q "$S/runner"; then
+  if [ ! -e "$S-runner.img" ]; then
+    fallocate -l "${RUNNER_SIZE:-3G}" "$S-runner.img"
+    chmod 600 "$S-runner.img"
+    mkfs.ext4 -q -m 0 -L ps-runner "$S-runner.img"
+  fi
+  grep -q "^$S-runner.img " /etc/fstab || echo "$S-runner.img $S/runner ext4 loop,nofail,noatime,nodev,nosuid,$BEFORE_DOCKER 0 2" >> /etc/fstab
+  systemctl daemon-reload
+  mount "$S/runner"
+fi
 # Drive and Tenderdash state in memory, with a fixed size per network (see README, "Disk and memory").
-for line in "tmpfs $S/ram/testnet tmpfs size=${TESTNET_STATE:-16g},mode=0700,noatime,nofail 0 0" \
-            "tmpfs $S/ram/mainnet tmpfs size=${MAINNET_STATE:-8g},mode=0700,noatime,nofail 0 0"; do
+for line in "tmpfs $S/ram/testnet tmpfs size=${TESTNET_STATE:-16g},mode=0700,noatime,nofail,$BEFORE_DOCKER 0 0" \
+            "tmpfs $S/ram/mainnet tmpfs size=${MAINNET_STATE:-8g},mode=0700,noatime,nofail,$BEFORE_DOCKER 0 0" \
+            "tmpfs $S/spool/requests tmpfs size=1m,nr_inodes=64,uid=1001,gid=0,mode=0730,noatime,nodev,nosuid,noexec,nofail,$BEFORE_DOCKER 0 0"; do
   grep -q "^tmpfs $(echo "$line" | cut -d' ' -f2) " /etc/fstab || echo "$line" >> /etc/fstab
 done
 systemctl daemon-reload
-for n in testnet mainnet; do mountpoint -q "$S/ram/$n" || mount "$S/ram/$n"; done
+for m in ram/testnet ram/mainnet spool/requests; do mountpoint -q "$S/$m" || mount "$S/$m"; done
 chmod 755 "$S" "$S/spool" "$S/spool/status" "$S/spool/status/results"
-chmod 700 "$S"/{home,data,state,runs}
-chown 1001:0 "$S/spool/requests"
-chmod 0730 "$S/spool/requests"
+chmod 700 "$S"/{home,data,state,runs,runner}
 
 # 2. dashmate, as a renderer of configuration. It is never used to start or stop anything.
 if [ ! -x "$S/dashmate/bin/dashmate" ] || [ "$(cat "$S/dl/url" 2>/dev/null)" != "$DASHMATE_URL" ]; then
