@@ -132,13 +132,24 @@ image's snapshot: the chain as Core had it on 2026-11-20 13:32 UTC.
   the zone and apply.
 - *They still exist, in a zone that does not work.* Changing the zone means
   replacing the instance and the volume, and both are `prevent_destroy`, so
-  Terraform refuses the plan. Keep the old ones as they are (they may come
-  back, and the volume holds the chain): take them out of the state with
-  `terraform state rm aws_instance.insight aws_ebs_volume.insight_data
-  aws_volume_attachment.insight_data`, tag them `retained-zone-outage`, then
-  change the zone and apply. Afterwards `prevent_destroy` protects the new
-  ones exactly as before; it is never taken off. Delete the old instance and
-  volume by hand once the new host serves.
+  Terraform refuses the plan. Keep the old ones (they may come back, and the
+  volume holds the chain), but fence the old host first:
+  1. Deregister it from `insight-mainnet` by hand (`aws elbv2
+     deregister-targets`) and check with `describe-target-health` that it is
+     no longer listed. If the zone comes back, the old host must not start
+     serving again on its own. Stop it as soon as AWS lets you.
+  2. Delete the import blocks for `aws_instance.insight`,
+     `aws_ebs_volume.insight_data` and `aws_volume_attachment.insight_data`
+     from `imports.tf`. Otherwise the next plan imports the old resources
+     back by their ids.
+  3. Take them out of the state: `terraform state rm aws_instance.insight
+     aws_ebs_volume.insight_data aws_volume_attachment.insight_data`, and
+     tag them `retained-zone-outage` in AWS.
+  4. Change `local.insight_zone` and follow the two-stage restore below.
+     `prevent_destroy` protects the new resources exactly as before; it is
+     never taken off.
+
+  Delete the old instance and volume by hand once the new host serves.
 
 Two things then take time, and both were measured when the host was moved on
 2026-11-20:

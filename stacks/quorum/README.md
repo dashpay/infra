@@ -196,10 +196,15 @@ migrated by 23.1.8 and cannot be opened by 22.
   reachable only from inside the VPC. Rotating the passwords on the hosts
   makes the copies harmless; the first-boot scripts here carry none.
 - **Switching the mainnet target.** Do it by hand, then make `mainnet.tf`
-  say the same: register the new instance on port 3000 in
-  `mainnet-quorum-tg`, wait until it is healthy and `/quorums` is right,
-  then deregister the old one (300 seconds of draining). The way back to
-  the original is the same in reverse.
+  say the same. **Check `/quorums` before the new instance is registered**,
+  not after: the target group checks only `/health`, which a server with no
+  quorums also passes (the recovery image does exactly that), and the load
+  balancer sends traffic to a target as soon as it is healthy. So: on the new
+  host itself (or from the bastion for a private host), `curl
+  localhost:3000/quorums` must return the current lists; only then register
+  it on port 3000 in `mainnet-quorum-tg`, wait until it is healthy, and
+  deregister the old one (300 seconds of draining). The way back to the
+  original is the same in reverse.
 - **Getting in.** Private hosts: through the bastion with `dashdev.rsa`.
   Recovery host: directly, as `ubuntu`, with latte's ed25519 key, and only
   from `153.67.85.166`, the address the earlier agent's host had. If that
