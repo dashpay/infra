@@ -1,0 +1,25 @@
+[Unit]
+Description=Dash Platform nightly sync (%i)
+Documentation=https://github.com/dashpay/infra/tree/master/platform-sync
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+# Never run against the root disk: the data lives on its own filesystem.
+RequiresMountsFor=/srv/platform-sync
+ConditionPathIsMountPoint=/srv/platform-sync
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 -u /opt/platform-sync/platform_sync.py daemon --network %i
+Restart=always
+RestartSec=15
+# The replay runs in containers. Stopping this unit stops watching, not the replay.
+KillMode=process
+UMask=0077
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
