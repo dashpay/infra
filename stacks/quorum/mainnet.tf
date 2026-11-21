@@ -43,4 +43,7 @@ module "mainnet" {
   zone_name           = local.zone_name
   cdn_certificate_arn = aws_acm_certificate.cdn.arn
   cdn_template_body   = file("${path.module}/files/quorums-cdn.yaml")
+
+  # First boot needs the NAT route; see testnet.tf.
+  depends_on = [aws_route_table_association.private, aws_route_table_association.public]
 }

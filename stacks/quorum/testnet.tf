@@ -49,4 +49,9 @@ module "testnet" {
   zone_name           = local.zone_name
   cdn_certificate_arn = aws_acm_certificate.cdn.arn
   cdn_template_body   = file("${path.module}/files/quorums-cdn.yaml")
+
+  # On a rebuild, the hosts install their packages on first boot through the
+  # NAT gateway, and first boot runs once. Without this, Terraform can launch
+  # them before the private subnet has its route out.
+  depends_on = [aws_route_table_association.private, aws_route_table_association.public]
 }
