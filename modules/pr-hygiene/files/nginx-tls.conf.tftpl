@@ -1,0 +1,96 @@
+# PR Hygiene service: the HTTPS side.
+# Installed as /etc/nginx/conf.d/pr-hygiene-tls.conf by pr-hygiene-tls, once
+# the certificate exists.
+
+# A TLS client that does not name the service is refused in the handshake.
+server {
+    listen 443 ssl default_server;
+    ssl_reject_handshake on;
+}
+
+server {
+    # HTTP/1.1 only. HTTP/2 stays off until Ubuntu's nginx carries the fix
+    # for the HTTP/2 vulnerability of November 2026. To turn it on then,
+    # check the installed version first (nginx -v): Ubuntu 24.04 ships 1.24,
+    # where it is "listen 443 ssl http2;". The separate "http2 on;" line
+    # exists only from 1.25.1. Run nginx -t before reloading.
+    listen 443 ssl;
+    server_name ${hostname};
+    # Set per server: Ubuntu's nginx.conf already sets it for the whole
+    # http block, and a second http-level line would be a duplicate.
+    server_tokens off;
+
+    ssl_certificate    /etc/letsencrypt/live/${hostname}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${hostname}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:prh_tls:10m;
+    ssl_session_timeout 1h;
+    ssl_session_tickets off;
+
+    # Client addresses are in this log, so it is kept for 14 days only
+    # (Ubuntu's logrotate rule for nginx: daily, rotate 14).
+    access_log /var/log/nginx/pr-hygiene.access.log prh;
+
+    # Slow and idle connections.
+    client_header_timeout 10s;
+    client_body_timeout   15s;
+    send_timeout          30s;
+    keepalive_timeout     30s;
+
+    limit_conn prh_conn 20;
+
+    # Only /ingest takes a body of any size.
+    client_max_body_size 64k;
+
+    # Headers pass through as the client sent them, Origin included. No
+    # X-Forwarded-For: the service has no use for a client address and
+    # promises to log none.
+    proxy_http_version    1.1;
+    proxy_set_header      Host $host;
+    proxy_set_header      Connection "";
+    proxy_connect_timeout 5s;
+    proxy_send_timeout    35s;
+    # The service ends a request at 30 s itself.
+    proxy_read_timeout    35s;
+
+    # One post of about 110 KB every 15 minutes, from GitHub-hosted runners.
+    # The limit equals the service's PR_HYGIENE_BODY_LIMIT, and the body is
+    # streamed so the service checks the token before reading it.
+    location = /ingest {
+        client_max_body_size    1m;
+        proxy_request_buffering off;
+        limit_req zone=prh_ingest burst=5 nodelay;
+        proxy_pass http://prh_service;
+    }
+
+    # GitHub's one-time code arrives in this request's query string. nginx
+    # writes the whole request line into its error log when a request fails
+    # or is rate-limited, so this location has no error log.
+    location = /auth/callback {
+        error_log /dev/null crit;
+        limit_req zone=prh_auth burst=10 nodelay;
+        proxy_pass http://prh_service;
+    }
+
+    location /auth/ {
+        limit_req zone=prh_auth burst=10 nodelay;
+        proxy_pass http://prh_service;
+    }
+
+    # /api/v1/me and everything under it.
+    location /api/v1/me {
+        limit_req zone=prh_auth burst=10 nodelay;
+        proxy_pass http://prh_service;
+    }
+
+    location /api/v1/ {
+        limit_req zone=prh_api burst=40 nodelay;
+        proxy_pass http://prh_service;
+    }
+
+    # The page, its files, /healthz and /readyz.
+    location / {
+        limit_req zone=prh_page burst=60 nodelay;
+        proxy_pass http://prh_service;
+    }
+}

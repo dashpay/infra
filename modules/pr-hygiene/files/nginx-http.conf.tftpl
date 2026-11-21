@@ -1,0 +1,52 @@
+# PR Hygiene service: shared settings and the plain-HTTP side.
+# Installed as /etc/nginx/conf.d/pr-hygiene-http.conf by pr-hygiene-bootstrap.
+#
+# The rules this proxy has to keep are in the service's README, "In front of
+# it". The numbers are starting points.
+
+# Per client address. Public reads; sign-in and personal routes (tighter:
+# starting a sign-in needs no account and writes to the database); ingest;
+# and the page with its files.
+limit_req_zone  $binary_remote_addr zone=prh_api:10m    rate=10r/s;
+limit_req_zone  $binary_remote_addr zone=prh_auth:10m   rate=10r/m;
+limit_req_zone  $binary_remote_addr zone=prh_ingest:1m  rate=30r/m;
+limit_req_zone  $binary_remote_addr zone=prh_page:10m   rate=20r/s;
+limit_conn_zone $binary_remote_addr zone=prh_conn:10m;
+limit_req_status  429;
+limit_conn_status 429;
+
+# The path only: $uri carries no query string, so the one-time code in
+# /auth/callback?code=... is never written. No header is logged at all.
+log_format prh '$remote_addr [$time_iso8601] $request_method $uri '
+               '$status $body_bytes_sent $request_time';
+
+upstream prh_service {
+    server 127.0.0.1:8080;
+    keepalive 8;
+}
+
+# Anything that does not ask for the service by name gets no answer.
+server {
+    listen 80 default_server;
+    server_name _;
+    access_log off;
+    return 444;
+}
+
+server {
+    listen 80;
+    server_name ${hostname};
+    server_tokens off;
+    access_log off;
+
+    # Let's Encrypt's HTTP-01 challenge.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/acme;
+        default_type text/plain;
+    }
+
+    # $uri, not $request_uri: the redirect carries no query string either.
+    location / {
+        return 301 https://${hostname}$uri;
+    }
+}
