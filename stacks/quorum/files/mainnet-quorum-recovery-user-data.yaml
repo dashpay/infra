@@ -1,0 +1,10 @@
+#cloud-config
+# First boot of the mainnet quorum recovery host (mainnet-recovery-host.tf).
+# The host has no EC2 key pair: this is how the SSH key gets onto it.
+#
+# The host that runs was launched on 2026-10-05 with this file plus a
+# temporary key for the recovery itself, which is not repeated here.
+ssh_pwauth: false
+ssh_deletekeys: true
+ssh_authorized_keys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFs+PhVxV2NLRvM9RFgDs7j4rv1/my/ILIUmde4RDS/v latte@isnot.coffee

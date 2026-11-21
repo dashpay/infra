@@ -1,0 +1,152 @@
+#!/bin/bash
+# First boot of the ${network} Core backend. Rendered by Terraform
+# (modules/quorum-network/core.tf) and run once, as root, by cloud-init.
+#
+# It installs Dash Core ${core_version}, mounts the EFS file system at /mnt/efs,
+# puts Core's data directory on it (/mnt/efs/dashcore, linked from
+# /home/dash/.dashcore) and starts dashd under systemd.
+#
+# dash.conf is on the file system, not on this host, and is written only if
+# it is not there yet. A rebuilt host that mounts the existing file system
+# therefore keeps the configuration and the RPC password it had. On an empty
+# file system a random RPC password is made here; none is in this script.
+# The quorum server needs that password: see the stack's README.
+#
+# This is the script the hosts were launched with in July 2025, with these
+# differences: the Core version is a parameter (it was 22.1.2), the RPC
+# password is generated (it was written in the script), the script stops if
+# the file system cannot be mounted (it used to carry on with a directory on
+# the system disk), and testnet uses the same write-if-absent step as
+# mainnet (testnet's original wrote dash.conf to a wrong path). No host has
+# been built from this version of the file yet.
+set -e
+
+# Update system
+apt-get update
+apt-get upgrade -y
+
+# Install dependencies
+apt-get install -y curl wget software-properties-common nfs-common
+
+# Create dash user
+useradd -m -s /bin/bash dash
+
+# Download and install Dash Core
+DASH_VERSION="${core_version}"
+cd /tmp
+wget https://github.com/dashpay/dash/releases/download/v$${DASH_VERSION}/dashcore-$${DASH_VERSION}-x86_64-linux-gnu.tar.gz
+tar -xzf dashcore-$${DASH_VERSION}-x86_64-linux-gnu.tar.gz
+cp dashcore-$${DASH_VERSION}/bin/* /usr/local/bin/
+rm -rf dashcore-$${DASH_VERSION}*
+
+# Mount the file system
+EFS_DNS="${efs_dns_name}"
+mkdir -p /mnt/efs
+
+echo "Waiting for EFS mount targets to be ready..."
+for i in {1..30}; do
+  if nslookup "$EFS_DNS" > /dev/null 2>&1; then
+    echo "EFS DNS resolved successfully"
+    break
+  fi
+  echo "Waiting for EFS DNS resolution... ($i/30)"
+  sleep 10
+done
+
+echo "Mounting EFS..."
+for i in {1..5}; do
+  if mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport "$EFS_DNS":/ /mnt/efs; then
+    echo "EFS mounted successfully"
+    break
+  fi
+  echo "EFS mount attempt $i failed, retrying in 30 seconds..."
+  sleep 30
+done
+
+# Without the file system Core would start a new chain on the system disk.
+if ! mountpoint -q /mnt/efs; then
+  echo "EFS is not mounted; stopping here"
+  exit 1
+fi
+
+# Add to fstab for persistence
+echo "$EFS_DNS:/ /mnt/efs nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0" >> /etc/fstab
+
+# Core's data directory is on the file system
+mkdir -p /mnt/efs/dashcore
+chown -R dash:dash /mnt/efs/dashcore
+ln -sf /mnt/efs/dashcore /home/dash/.dashcore
+
+# Create dash.conf for ${network}, only if the file system does not have one
+CONFIG_PATH="/mnt/efs/dashcore/dash.conf"
+
+if [ ! -f "$CONFIG_PATH" ]; then
+  echo "Creating new dash.conf..."
+  RPC_PASSWORD=$(openssl rand -hex 32)
+  cat > "$CONFIG_PATH" << EOF
+%{ if network == "testnet" ~}
+testnet=1
+%{ endif ~}
+server=1
+listen=1
+daemon=1
+
+# Performance settings
+dbcache=1024
+maxorphantx=10
+maxmempool=50
+maxconnections=125
+maxuploadtarget=5000
+%{ for line in conf_extra ~}
+${line}
+%{ endfor ~}
+
+%{ if network == "testnet" ~}
+# Testnet specific
+[test]
+%{ else ~}
+# Mainnet specific
+%{ endif ~}
+rpcport=${rpc_port}
+port=${p2p_port}
+rpcuser=dashrpc
+rpcpassword=$RPC_PASSWORD
+rpcallowip=${rpc_allow_ip}
+rpcbind=0.0.0.0
+EOF
+
+  chown dash:dash "$CONFIG_PATH"
+  chmod 600 "$CONFIG_PATH"
+else
+  echo "Using existing dash.conf at $CONFIG_PATH"
+fi
+
+# Create systemd service
+cat > /etc/systemd/system/dashd.service << 'EOF'
+[Unit]
+Description=Dash Core Daemon
+After=network.target
+
+[Service]
+Type=forking
+User=dash
+Group=dash
+WorkingDirectory=/home/dash
+ExecStart=/usr/local/bin/dashd -conf=/home/dash/.dashcore/dash.conf -datadir=/home/dash/.dashcore
+ExecStop=/usr/local/bin/dash-cli -conf=/home/dash/.dashcore/dash.conf -datadir=/home/dash/.dashcore stop
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable and start Dash Core
+systemctl daemon-reload
+systemctl enable dashd
+systemctl start dashd
+
+# Install monitoring
+apt-get install -y htop iotop sysstat
+
+echo "Dash Core installation completed"

@@ -1,0 +1,27 @@
+#!/bin/bash
+set -eux
+export DEBIAN_FRONTEND=noninteractive
+# the seeder needs port 53; move systemd-resolved's stub listener out of the way
+mkdir -p /etc/systemd/resolved.conf.d
+printf '[Resolve]\nDNSStubListener=no\n' > /etc/systemd/resolved.conf.d/no-stub.conf
+ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+systemctl restart systemd-resolved
+apt-get update
+apt-get install -y docker.io docker-compose-v2
+mkdir -p /opt/dnsseed
+cat > /opt/dnsseed/docker-compose.yml <<'YML'
+# Dash DNS seeder (${network}). Built by infraclaw-kb/tools/dashdev_dnsseed.py, dashpay/infra #19.
+services:
+  dnsseed:
+    image: ${image}
+    container_name: dnsseed
+    restart: unless-stopped
+    ports:
+      - 53:53/udp
+    command: [${join(", ", [for a in arguments : jsonencode(a)])}]
+    logging:
+      options:
+        max-file: "5"
+        max-size: "100m"
+YML
+cd /opt/dnsseed && docker compose up --detach

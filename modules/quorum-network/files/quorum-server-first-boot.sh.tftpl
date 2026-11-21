@@ -1,0 +1,100 @@
+#!/bin/bash
+# First boot of the ${network} quorum server. Rendered by Terraform
+# (modules/quorum-network/quorum-server.tf) and run once, as root, by
+# cloud-init.
+#
+# It installs dashpay/quorum-list-server ${version} in
+# /home/quorum/quorum-list-server, writes config.toml beside the binary and
+# enables the service.
+#
+# It does NOT start the service, because it does not know Core's RPC
+# password, which must never be in this script. To finish by hand:
+#   1. read rpcpassword from /mnt/efs/dashcore/dash.conf on the Core backend;
+#   2. put it in /home/quorum/quorum-list-server/config.toml in place of
+#      SET-RPC-PASSWORD;
+#   3. systemctl start quorum-list-server, then check
+#      curl localhost:${listen_port}/health and /quorums.
+#
+# This is the script the hosts were launched with in July 2025, with these
+# differences: the release is a parameter (it installed whatever was latest),
+# the password is left out (it was written in the script), the service is
+# not started, and config.toml names the network (the server assumes testnet
+# without it; the hosts had the line added by hand). No host has been built
+# from this version of the file yet.
+set -e
+
+# Update system
+apt-get update
+apt-get upgrade -y
+
+# Install dependencies
+apt-get install -y curl wget netcat-openbsd
+
+# Create app user
+useradd -m -s /bin/bash quorum
+
+# Create application directory structure
+mkdir -p /home/quorum/quorum-list-server/logs
+chown -R quorum:quorum /home/quorum
+
+# Download and install the quorum-list-server release
+cd /tmp
+wget "https://github.com/dashpay/quorum-list-server/releases/download/${version}/quorum-list-server-linux-x86_64.tar.gz"
+tar -xzf quorum-list-server-linux-x86_64.tar.gz
+
+# Install binary and config in the same directory (working directory)
+chmod +x quorum-list-server
+mv quorum-list-server /home/quorum/quorum-list-server/
+chown quorum:quorum /home/quorum/quorum-list-server/quorum-list-server
+
+# Create configuration file in same directory as binary
+cat > /home/quorum/quorum-list-server/config.toml << 'EOF'
+network = "${network}"
+
+[server]
+port = ${listen_port}
+host = "0.0.0.0"
+
+[rpc]
+url = "http://${core_ip}:${core_port}"
+username = "dashrpc"
+password = "SET-RPC-PASSWORD"
+
+[quorum]
+previous_blocks_offset = 8
+EOF
+
+# Set permissions
+chown quorum:quorum /home/quorum/quorum-list-server/config.toml
+chmod 600 /home/quorum/quorum-list-server/config.toml
+
+# Create systemd service
+cat > /etc/systemd/system/quorum-list-server.service << 'EOF'
+[Unit]
+Description=Quorum List Server
+After=network.target
+
+[Service]
+Type=simple
+User=quorum
+Group=quorum
+WorkingDirectory=/home/quorum/quorum-list-server
+Environment="RUST_LOG=info"
+ExecStart=/home/quorum/quorum-list-server/quorum-list-server
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/quorum/quorum-list-server/logs/quorum-list-server.log
+StandardError=append:/home/quorum/quorum-list-server/logs/quorum-list-server.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable the service. It is started by hand once the password is in place.
+systemctl daemon-reload
+systemctl enable quorum-list-server
+
+# Install monitoring
+apt-get install -y htop iotop sysstat
+
+echo "Quorum List Server installed. Set the RPC password in config.toml, then start the service."
