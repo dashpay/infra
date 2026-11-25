@@ -50,6 +50,57 @@ dev-profile builds that write SDK test data into the genesis state
 per-commit nightly needs Platform CI to publish a release-profile Drive image
 without test data; pass such an image as `image` once it exists.
 
+## Releases: replayed without being asked
+
+`release_watch.py` (timer `platform-sync-release-watch.timer`, every two
+minutes) replays every **dev and rc release** of `dashpay/platform` on both
+networks:
+
+1. A new tag `vX.Y.Z-dev.N` or `vX.Y.Z-rc.N` appears in the releases feed. It
+   says so in Slack; everything later about that release goes in the same
+   thread.
+2. It waits for CI: the `Release Drive image` jobs of the `Release Platform`
+   run for that tag must all have succeeded, and `dashpay/drive:X.Y.Z-…` must
+   be on Docker Hub for amd64. The rest of that workflow (NPM, SDKs, dashmate
+   packages) takes hours longer and is not waited for.
+3. It writes one request per network, naming that Drive image and the
+   Tenderdash image dashmate ships at the same tag
+   (`release-<version>-<network>`). A network that is replaying, or on hold,
+   gets its request when it is free.
+4. It posts each network's result when the daemon has written it.
+
+What it does not do:
+
+- **Stable releases** (`v5.1.0`) are not replayed: change `tag_pattern` for that.
+- **Nothing published before its first run** is replayed. To follow one that
+  is already out: `release_watch.py add --tag v5.1.0-rc.1`.
+- A release that is still waiting when a newer one of the same `X.Y` line is
+  published is dropped in favour of the newer one. A replay that has started
+  is never interrupted; the next release waits for it.
+- If CI ends without the image, it says so once and keeps looking for 72
+  hours, so a rerun that publishes the image still starts the replay.
+
+Why it asks instead of being told: the host has no public address, so a GitHub
+webhook cannot reach it. New tags come from `releases.atom`, the image from
+Docker Hub's API, and the state of CI from the GitHub API without a token
+(two calls every five to ten minutes while a release waits, none otherwise). If GitHub
+does not answer for 45 minutes while the image is already on Docker Hub, the
+replay starts anyway and the message says that CI could not be read.
+
+It runs as root but only writes its state (`state/release-watch.json`) and
+request files, which pass the same checks as the runner's. The release title
+and notes are never read. Slack goes through an MCP server with a
+`post_message` tool; set it in `/etc/platform-sync/config.json`, and until
+then the watcher only logs:
+
+```json
+{"release_watch": {"notify": {"mcp_url": "http://127.0.0.1:8787/mcp",
+                              "bearer_file": "/etc/…/mcp-bearer", "channel": "C…"}}}
+```
+
+A message Slack did not take is sent on a later pass; it never holds up a
+replay.
+
 ## Pass and fail
 
 A run **passes** when Tenderdash reports it is no longer catching up, its
@@ -180,6 +231,12 @@ sudo python3 /opt/platform-sync/platform_sync.py request --network testnet --ima
 # keep the next run from wiping a failed node while somebody looks at it
 sudo python3 /opt/platform-sync/platform_sync.py hold --network testnet "Ivan is reading the stores"
 sudo python3 /opt/platform-sync/platform_sync.py release --network testnet
+
+# the release watcher: what it follows, what it would do now, its log
+sudo python3 /opt/platform-sync/release_watch.py status
+sudo python3 /opt/platform-sync/release_watch.py tick --dry-run
+journalctl -u platform-sync-release-watch -n 50
+sudo systemctl disable --now platform-sync-release-watch.timer   # switch it off
 ```
 
 From GitHub: *Actions → Platform sync → Run workflow*, with a network and an
@@ -245,10 +302,12 @@ Cancelling the GitHub job stops the waiting, not the replay.
 |---|---|
 | `platform_sync.py` | The daemon and its command line |
 | `request.py` | The client the workflow runs inside the runner |
+| `release_watch.py` | Asks for a replay of every new dev and rc release, and reports it |
+| `systemd/platform-sync-release-watch.{service,timer}` | Runs it every two minutes |
 | `compose.override.yml` | Data location, ports, log and resource caps |
 | `pscompose` | `docker compose` for one stack, for people |
 | `systemd/platform-sync@.service` | One daemon per network |
 | `systemd/platform-sync-firewall.service` | Keeps the mainnet stack off the internet |
 | `runner/` | The runner container and its registration |
 | `install.sh` | Builds the host side from nothing |
-| `test_platform_sync.py` | `python3 -m unittest platform-sync/test_platform_sync.py` |
+| `test_platform_sync.py`, `test_release_watch.py` | `python3 -m unittest platform-sync/test_platform_sync.py platform-sync/test_release_watch.py` |

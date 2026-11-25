@@ -106,13 +106,17 @@ for c in testnet mainnet; do "$S/bin/pscompose" $c up -d --no-deps core; done
 
 # 5. The daemons.
 install -d -m 755 /opt/platform-sync /etc/platform-sync
-install -m 644 "$here/platform_sync.py" "$here/request.py" "$here/test_platform_sync.py" /opt/platform-sync/
+install -m 644 "$here/platform_sync.py" "$here/request.py" "$here/test_platform_sync.py" \
+  "$here/release_watch.py" "$here/test_release_watch.py" /opt/platform-sync/
 install -m 644 "$here/systemd/platform-sync@.service" /etc/systemd/system/platform-sync@.service
+# The release watcher: asks for a replay of every new dev and rc release (README, "Releases").
+install -m 644 "$here/systemd/platform-sync-release-watch.service" "$here/systemd/platform-sync-release-watch.timer" /etc/systemd/system/
 # The firewall unit carries the mainnet subnet; change both together.
 install -m 644 "$here/systemd/platform-sync-firewall.service" /etc/systemd/system/platform-sync-firewall.service
 systemctl daemon-reload
 systemctl enable --now platform-sync-firewall.service
 systemctl enable --now platform-sync@testnet.service platform-sync@mainnet.service
+systemctl enable --now platform-sync-release-watch.timer
 
 # 6. The runner is registered separately, with a token: see runner/register.sh.
 install -d -m 700 /opt/platform-sync-runner

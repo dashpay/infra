@@ -1,0 +1,20 @@
+[Unit]
+Description=Dash Platform sync: replay new dev and rc releases
+Documentation=https://github.com/dashpay/infra/tree/master/platform-sync
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/platform-sync
+ConditionPathIsMountPoint=/srv/platform-sync
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -u /opt/platform-sync/release_watch.py tick
+TimeoutStartSec=300
+UMask=0077
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+# It writes its own state and request files, nothing else. It has no Docker access of its own.
+ProtectSystem=strict
+ReadWritePaths=/srv/platform-sync/state /srv/platform-sync/spool/requests
