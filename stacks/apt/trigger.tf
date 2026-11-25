@@ -33,8 +33,16 @@ resource "aws_sfn_state_machine" "publish" {
     StartAt = "HasTag"
     States = {
       HasTag = {
-        Type    = "Choice"
-        Choices = [{ Variable = "$.tag", IsString = true, Next = "PublishRelease" }]
+        Type = "Choice"
+        # IsPresent first: any other test of a field that is not there fails
+        # the execution.
+        Choices = [{
+          And = [
+            { Variable = "$.tag", IsPresent = true },
+            { Variable = "$.tag", IsString = true },
+          ]
+          Next = "PublishRelease"
+        }]
         Default = "Refresh"
       }
 
