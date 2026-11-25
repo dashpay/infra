@@ -2,7 +2,7 @@
 
 `dashmate-archive-keyring.gpg` is the repository's public key, binary
 (`gpg --export`), with both signing subkeys. It is the file operators get as
-`/usr/share/keyrings/dashmate-archive-keyring.gpg`. Fingerprints and expiry
+`/etc/apt/keyrings/dashmate-archive-keyring.gpg`. Fingerprints and expiry
 are in `../../README.md`, "The key".
 
 ```sh

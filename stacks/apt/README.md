@@ -9,12 +9,22 @@ URIs: https://apt.services.dash.org/dashmate
 Suites: stable
 Components: main
 Architectures: amd64 arm64
-Signed-By: /usr/share/keyrings/dashmate-archive-keyring.gpg
+Signed-By: /etc/apt/keyrings/dashmate-archive-keyring.gpg
 ```
 
 The dashmate package ships that file as a dpkg conffile, always naming
 `stable`. An operator who edits it keeps their copy for ever, so **the URL
-and the keyring path can never change.**
+can never change.** The package also ships the keyring at the path above,
+and `/etc/apt/preferences.d/dashmate.pref`, which pins the origin
+`apt.services.dash.org` so that this repository can supply the package
+`dashmate` and nothing else. The three files and their paths belong to
+`dashpay/platform` (`packages/dashmate/deb/`).
+
+A release from before the package shipped those files (`5.1.0~rc.1`) is
+installed by hand, with the keyring this repository serves at
+`/dashmate/dashmate-archive-keyring.gpg`. The procedure is in
+[dashpay/platform#4246](https://github.com/dashpay/platform/issues/4246#issuecomment-7166669368),
+so that URL has to stay as well.
 
 ## Suites
 
@@ -115,6 +125,9 @@ apt has no revocation. A host trusts exactly the keyring file it has, so:
   three months ahead (by 2027-08-25 for this key), so that it reaches hosts
   in a dashmate release before the old one runs out. A host that misses it gets
   `EXPKEYSIG` and stops updating until it installs a newer deb by hand.
+  A host that set the repository up by hand (above) holds a copy of the
+  keyring that no package renews, until its operator moves to the package's
+  own files.
 - **If the primary key leaks, or is lost:** there is no quiet way out. A new
   key means a new keyring on every host, which reaches them only through a
   dashmate release installed from the old key, or by hand.

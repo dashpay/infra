@@ -3,7 +3,8 @@
 #
 # For a disposable Ubuntu machine with sudo: it installs test packages named
 # dashmate, writes /etc/apt/sources.list.d/dashmate.sources and a keyring in
-# /usr/share/keyrings. Never run it on a host that runs dashmate.
+# /etc/apt/keyrings, the paths the dashmate package owns. Never run it on a
+# host that runs dashmate.
 #
 #   bash stacks/apt/publisher/tests/integration.sh
 #   REAL=1 bash ...   also publishes a real release of dashpay/platform (190 MB)
@@ -101,7 +102,7 @@ carries() { # suite, versions expected in both architectures
 
 use_suite() {
   printf '%s\n' "Types: deb" "URIs: http://127.0.0.1:8081/dashmate" "Suites: $1" "Components: main" \
-    "Architectures: amd64 arm64" "Signed-By: /usr/share/keyrings/dashmate-archive-keyring.gpg" |
+    "Architectures: amd64 arm64" "Signed-By: /etc/apt/keyrings/dashmate-archive-keyring.gpg" |
     sudo tee /etc/apt/sources.list.d/dashmate.sources > /dev/null
 }
 apt_update() { # any failure is an error, and only our source is read
@@ -127,7 +128,7 @@ ok "refused a bad tag, an alpha, and a release that does not exist"
 
 expect 0 "stable: published, empty" publish
 carries stable ""
-sudo install -m 0644 "$W/keyring/dashmate-archive-keyring.gpg" /usr/share/keyrings/dashmate-archive-keyring.gpg
+sudo install -D -m 0644 "$W/keyring/dashmate-archive-keyring.gpg" /etc/apt/keyrings/dashmate-archive-keyring.gpg
 use_suite stable
 expect 0 "" apt_update
 ok "apt-get update accepts the signed, empty stable"
