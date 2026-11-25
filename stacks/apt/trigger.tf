@@ -159,7 +159,6 @@ resource "aws_scheduler_schedule" "daily" {
   schedule_expression          = "cron(17 5 * * ? *)"
   schedule_expression_timezone = "UTC"
 
-  # Off until the repository has a key: README.md, "The key".
   state = var.schedule_enabled ? "ENABLED" : "DISABLED"
 
   flexible_time_window {
@@ -174,9 +173,9 @@ resource "aws_scheduler_schedule" "daily" {
 }
 
 variable "schedule_enabled" {
-  description = "Whether the daily run is on. Turn it on when the archive keyring is committed and the signing subkey is in Secrets Manager; before that every run is refused."
+  description = "Whether the daily run is on. Off is for a repository without a key, where every run is refused."
   type        = bool
-  default     = false
+  default     = true
 }
 
 # --- on a release ---------------------------------------------------------------
