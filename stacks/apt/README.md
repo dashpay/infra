@@ -192,5 +192,10 @@ real apt client.
 - The keys. Neither the primary nor a subkey is a Terraform resource; the
   secret's value is put there by hand.
 - The trigger job and the environment in `dashpay/platform`.
-- Anything that tells a person the daily run failed. Nothing in AWS can
-  reach our Slack; the check above is made from outside.
+- What tells a person the daily run failed. Nothing in AWS can reach our
+  Slack, so the check above is made from outside: since 2026-11-25 a timer on
+  infraclaw's operations host reads `InRelease` of every suite each 15
+  minutes, verifies it against a copy of the keyring, and says in Slack when
+  a suite was not signed again for 40 hours, has under four days left, has
+  expired, cannot be fetched, or is not signed by this key. That copy of the
+  keyring has to be replaced whenever the keyring here is.
