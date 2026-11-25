@@ -42,6 +42,14 @@ locals {
         "AmazonS3FullAccess",
       ]
     }
+
+    # The infraclaw worker: the virtual machine where requests made to the
+    # infraclaw bot in Slack are carried out. It holds this user's access
+    # key behind a broker that hands out one-hour sessions. What it may do
+    # is the inline policy below, and nothing else.
+    infraclaw-worker = {
+      aws_managed_policies = []
+    }
   }
 
   user_policy_attachments = merge([
@@ -143,6 +151,86 @@ resource "aws_iam_user_policy" "gitlab_runner_s3_cache" {
   name   = "s3_cache_Access"
   user   = aws_iam_user.this["gitlab-runner"].name
   policy = data.aws_iam_policy_document.gitlab_runner_s3_cache.json
+}
+
+# --- infraclaw-worker
+
+# Two things: look, and log in to devnet hosts.
+#
+# Looking is a short list of describe and list calls, written out so that
+# nothing with a secret in it is included: no instance user data
+# (`ec2:DescribeInstanceAttribute`), no S3 objects, no parameters, no
+# secrets, no function code or configuration. Do not replace the list with
+# an AWS-managed read-only policy; those read S3 objects and more.
+#
+# Logging in is EC2 Instance Connect as `ubuntu`, and only on instances
+# whose `DashNetwork` tag starts with `devnet-`. The status console puts
+# that tag on every host of a devnet it creates. Testnet hosts carry
+# `DashNetwork=testnet` and mainnet hosts something else or nothing, so
+# the call is refused there. This user cannot write tags.
+data "aws_iam_policy_document" "infraclaw_worker" {
+  statement {
+    sid = "Look"
+    actions = [
+      "autoscaling:DescribeAutoScalingGroups",
+      "cloudfront:ListDistributions",
+      "cloudwatch:DescribeAlarms",
+      "cloudwatch:GetMetricData",
+      "cloudwatch:GetMetricStatistics",
+      "cloudwatch:ListMetrics",
+      "ec2:DescribeAddresses",
+      "ec2:DescribeAvailabilityZones",
+      "ec2:DescribeImages",
+      "ec2:DescribeInstanceStatus",
+      "ec2:DescribeInstanceTypes",
+      "ec2:DescribeInstances",
+      "ec2:DescribeNetworkInterfaces",
+      "ec2:DescribeRegions",
+      "ec2:DescribeRouteTables",
+      "ec2:DescribeSecurityGroupRules",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeSnapshots",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeTags",
+      "ec2:DescribeVolumeStatus",
+      "ec2:DescribeVolumes",
+      "ec2:DescribeVpcs",
+      "elasticloadbalancing:DescribeListeners",
+      "elasticloadbalancing:DescribeLoadBalancers",
+      "elasticloadbalancing:DescribeRules",
+      "elasticloadbalancing:DescribeTargetGroups",
+      "elasticloadbalancing:DescribeTargetHealth",
+      "route53:ListHostedZones",
+      "route53:ListResourceRecordSets",
+      "s3:GetBucketLocation",
+      "s3:ListAllMyBuckets",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "LogInToDevnetHosts"
+    actions   = ["ec2-instance-connect:SendSSHPublicKey"]
+    resources = ["arn:aws:ec2:*:854439639386:instance/*"]
+
+    condition {
+      test     = "StringLike"
+      variable = "aws:ResourceTag/DashNetwork"
+      values   = ["devnet-*"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:osuser"
+      values   = ["ubuntu"]
+    }
+  }
+}
+
+resource "aws_iam_user_policy" "infraclaw_worker" {
+  name   = "LookAndDevnetLogin"
+  user   = aws_iam_user.this["infraclaw-worker"].name
+  policy = data.aws_iam_policy_document.infraclaw_worker.json
 }
 
 output "iam_users" {
