@@ -7,17 +7,27 @@ data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 }
 
+# The owned address range (68.67.122.0/24) as it is offered in us-west-2.
+# Public hosts use it rather than Amazon-assigned addresses. The pool belongs
+# to the account stack. An IPAM is read in its home region.
+data "aws_vpc_ipam_pool" "owned" {
+  region = "us-east-1"
+
+  filter {
+    name   = "description"
+    values = ["byoip-us-west-2"]
+  }
+}
+
 module "pr_hygiene" {
-  source = "../modules/pr-hygiene"
+  source = "../../modules/pr-hygiene"
 
   hostname  = "pr-hygiene.${aws_route53_zone.services.name}"
   zone_id   = aws_route53_zone.services.zone_id
   vpc_id    = aws_vpc.services.id
   subnet_id = aws_subnet.services["a"].id
 
-  # The owned address range (68.67.122.0/24) in us-west-2. Public hosts use
-  # it rather than Amazon-assigned addresses.
-  ipam_pool_id = "ipam-pool-0de83ed8bba5f9b48"
+  ipam_pool_id = data.aws_vpc_ipam_pool.owned.id
 
   github_oidc_provider_arn = data.aws_iam_openid_connect_provider.github.arn
   github_repository        = "dashpay/stale_prs_are_bad"
