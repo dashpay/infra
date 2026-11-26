@@ -155,7 +155,8 @@ resource "aws_iam_user_policy" "gitlab_runner_s3_cache" {
 
 # --- infraclaw-worker
 
-# Two things: look, and log in to devnet hosts.
+# Two things: look, and log in to devnet and testnet hosts and the status
+# console's host.
 #
 # Looking is a short list of describe and list calls, written out so that
 # nothing with a secret in it is included: no instance user data
@@ -163,11 +164,20 @@ resource "aws_iam_user_policy" "gitlab_runner_s3_cache" {
 # secrets, no function code or configuration. Do not replace the list with
 # an AWS-managed read-only policy; those read S3 objects and more.
 #
-# Logging in is EC2 Instance Connect as `ubuntu`, and only on instances
-# whose `DashNetwork` tag starts with `devnet-`. The status console puts
-# that tag on every host of a devnet it creates. Testnet hosts carry
-# `DashNetwork=testnet` and mainnet hosts something else or nothing, so
-# the call is refused there. This user cannot write tags.
+# Logging in is EC2 Instance Connect as `ubuntu`, on three kinds of host:
+#   - instances whose `DashNetwork` tag starts with `devnet-`. The status
+#     console puts that tag on every host of a devnet it creates.
+#   - instances tagged `DashNetwork=testnet`: the whole testnet fleet,
+#     the wallet node included (since 2026-11-26, the owner's decision:
+#     the bot should be able to operate testnet without him, and testnet
+#     funds are not to be gated strongly).
+#   - the status console's host, by instance id (same date: so that the
+#     bot can deploy the console). `ubuntu` has sudo there, so this is
+#     everything the console can do, the testnet reset included; the
+#     worker's rules and its kill switch on the console API are what
+#     stand in front of that, not this policy.
+# Mainnet hosts carry `DashNetwork=mainnet-support`, something else or
+# nothing, so the call is refused there. This user cannot write tags.
 data "aws_iam_policy_document" "infraclaw_worker" {
   statement {
     sid = "Look"
@@ -209,15 +219,29 @@ data "aws_iam_policy_document" "infraclaw_worker" {
   }
 
   statement {
-    sid       = "LogInToDevnetHosts"
+    sid       = "LogInToDevnetAndTestnetHosts"
     actions   = ["ec2-instance-connect:SendSSHPublicKey"]
     resources = ["arn:aws:ec2:*:854439639386:instance/*"]
 
     condition {
       test     = "StringLike"
       variable = "aws:ResourceTag/DashNetwork"
-      values   = ["devnet-*"]
+      values   = ["devnet-*", "testnet"]
     }
+
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:osuser"
+      values   = ["ubuntu"]
+    }
+  }
+
+  # The status console's host (stacks/console). It has no DashNetwork tag,
+  # so it is named. If the host is replaced, its new id goes here.
+  statement {
+    sid       = "LogInToStatusHost"
+    actions   = ["ec2-instance-connect:SendSSHPublicKey"]
+    resources = ["arn:aws:ec2:us-west-2:854439639386:instance/i-0089435363e96c711"]
 
     condition {
       test     = "StringEquals"
@@ -227,10 +251,19 @@ data "aws_iam_policy_document" "infraclaw_worker" {
   }
 }
 
-resource "aws_iam_user_policy" "infraclaw_worker" {
-  name   = "LookAndDevnetLogin"
-  user   = aws_iam_user.this["infraclaw-worker"].name
-  policy = data.aws_iam_policy_document.infraclaw_worker.json
+# A policy of its own, attached, not an inline one: a user's inline policies
+# may hold 2,048 characters in all, and this document is past that since
+# the status host's statement (2026-11-26; until then it was the inline
+# policy LookAndDevnetLogin).
+resource "aws_iam_policy" "infraclaw_worker" {
+  name        = "infraclaw-worker-look-and-login"
+  description = "The infraclaw bot's worker: describe and list calls, and Instance Connect logins on devnet hosts, testnet hosts and the status console's host"
+  policy      = data.aws_iam_policy_document.infraclaw_worker.json
+}
+
+resource "aws_iam_user_policy_attachment" "infraclaw_worker" {
+  user       = aws_iam_user.this["infraclaw-worker"].name
+  policy_arn = aws_iam_policy.infraclaw_worker.arn
 }
 
 output "iam_users" {
