@@ -10,7 +10,7 @@ adopted with `imports.tf`.
 |---|---|
 | `state-bucket.tf` | The bucket `dash-terraform-state-854439639386` (`us-east-1`) that holds every stack's state: versioning, encryption, public-access block, object ownership. It has no bucket policy and no lifecycle rule |
 | `github-oidc.tf` | The GitHub Actions identity provider (`token.actions.githubusercontent.com`). Every deploy role in the other stacks trusts it |
-| `iam-users.tf` | The users `daniel`, `quantum`, `vivek`, `gitlab-runner` and `infraclaw-worker` (the infraclaw bot's worker: look, and log in to devnet hosts), the AWS-managed policies attached to them and their inline policies |
+| `iam-users.tf` | The users `daniel`, `quantum`, `vivek`, `gitlab-runner` and `infraclaw-worker` (the infraclaw bot's worker: look, and log in to devnet hosts, testnet hosts and the status console's host), the AWS-managed policies attached to them and their inline policies |
 | `iam-groups.tf` | The group `kops` (no members) and its five AWS-managed policies |
 | `iam-account.tf` | The account alias `dashdev` and the password policy |
 | `ipam.tf` | The IPAM `org-ipam` (home region `us-east-1`), the pools `byoip-top-level` and `byoip-us-west-2`, and the owned block `68.67.122.0/24` provisioned in each |
