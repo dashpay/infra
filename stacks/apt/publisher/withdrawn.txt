@@ -1,0 +1,5 @@
+# Debian versions that are in no suite and cannot be published again, one
+# per line, for example: 5.1.0-1
+# The next run takes a listed version out of every suite. Its file stays in
+# the pool. Hosts that installed it keep it: publish a higher version to
+# move them. See ../README.md, "Withdrawing a release".

@@ -18,6 +18,7 @@ touching the others.
 | `stacks/account/` | Account-wide things: the state bucket, the GitHub Actions OIDC provider, IAM users, the IPAM and the owned address pools | `dash-infra/account.tfstate` |
 | `stacks/dns/` | Public DNS zones and domain registrations | `dash-infra/dns.tfstate` |
 | `stacks/services/` | The `dash-services` VPC, `services.dash.org`, the PR Hygiene service (#90) | `dash-infra/services.tfstate` |
+| `stacks/apt/` | The signed apt repository for dashmate, `apt.services.dash.org`, and the job that publishes it | `dash-infra/apt.tfstate` |
 | `stacks/quorum/` | The quorum list service for testnet and mainnet (`us-east-1`) | `dash-infra/quorum.tfstate` |
 | `stacks/console/` | The status console's host, roles, table and bucket, and the VPC it builds devnets in | `dash-infra/console.tfstate` |
 | `stacks/web/` | Static sites, `media.dash.org`, the OpenAI proxy behind dashpay.io | `dash-infra/web.tfstate` |
