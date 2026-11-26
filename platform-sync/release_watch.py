@@ -46,8 +46,8 @@ DEFAULTS = {
     "image_job": "Release Drive image",
     "image": "dashpay/drive",
     "networks": ["testnet", "mainnet"],
-    # The feed is read on a wake (systemd sets TRIGGER_PATH when the .path unit started the
-    # pass) and at least this often. A woken pass that finds nothing new reads it once more
+    # The feed is read on a wake (the unit leaves the file WOKEN when it took a wake off the
+    # listener's spool as it started the pass) and at least this often. A woken pass that finds nothing new reads it once more
     # a little later: the webhook can be ahead of the feed.
     "feed_seconds": 900,
     "wake_second_look_seconds": 20,
@@ -61,6 +61,10 @@ DEFAULTS = {
     "notify": {"mcp_url": None, "bearer_file": None, "channel": None},
 }
 UA = "platform-sync-release-watch"
+# Written by the service unit (ExecStartPre) when this pass was started for a wake, removed
+# when it was not. systemd's own $TRIGGER_PATH is not used for that: on the host (systemd
+# 259) the TRIGGER_* variables were seen to keep naming whichever unit started a service first.
+WOKEN = "/run/platform-sync-release-watch.woken"
 ATOM = "{http://www.w3.org/2005/Atom}"
 VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z]+)\.(\d+))?$")
 TENDERDASH_RE = re.compile(r"image:\s*'(dashpay/tenderdash:[A-Za-z0-9._-]+)'")
@@ -477,8 +481,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     w = Watch(ps.load_config(args.config), dry=getattr(args, "dry_run", False))
     if args.cmd == "tick":
-        # systemd names the watched directory when the .path unit, that is a wake, started this pass.
-        w.tick(woken=args.woken or bool(os.environ.get("TRIGGER_PATH")))
+        w.tick(woken=args.woken or os.path.exists(WOKEN))
     elif args.cmd == "status":
         s = w.state or {}
         print(json.dumps({"since": s.get("since"), "feedReadAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(s["feedAt"])) if s.get("feedAt") else None, "releases": [

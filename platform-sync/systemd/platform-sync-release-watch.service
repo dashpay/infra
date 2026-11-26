@@ -12,8 +12,10 @@ User=root
 # Started by a wake (the .path unit) or by the timer. GitHub sends three
 # deliveries for one release within a second: wait for them, then take the wake
 # off the listener's spool ("+": outside this unit's read-only view) and look once.
+# Whether there was a wake to take is left in a marker, which the pass reads: it
+# decides whether GitHub's feed is read now.
 ExecStartPre=/usr/bin/sleep 3
-ExecStartPre=+/usr/bin/rm -f /run/infraclaw-wake/platform-release/wake
+ExecStartPre=+/bin/sh -c 'if [ -e /run/infraclaw-wake/platform-release/wake ]; then rm -f /run/infraclaw-wake/platform-release/wake; touch /run/platform-sync-release-watch.woken; else rm -f /run/platform-sync-release-watch.woken; fi'
 ExecStart=/usr/bin/python3 -u /opt/platform-sync/release_watch.py tick
 TimeoutStartSec=300
 UMask=0077
