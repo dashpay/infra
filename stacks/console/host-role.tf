@@ -211,18 +211,33 @@ resource "aws_iam_role_policy" "status_agent" {
       },
       # An address must carry the ownership tag from the moment it exists, so
       # the agent can always release what it allocated. dash-network-go sends
-      # the tags in AllocateAddress itself (internal/provision/ipam.go).
+      # the tags in AllocateAddress itself (internal/provision/ipam.go), as an
+      # elastic-ip tag specification.
+      #
+      # AllocateAddress with IpamPoolId is authorised twice: on the new
+      # elastic-ip and on the IPAM pool it comes from. EC2 puts the request's
+      # tags in the context only for the resource being tagged, so a tag
+      # condition never matches the pool. Like RunInstances above: the address
+      # is limited by tag, the pool by ARN. With the tag condition on "*"
+      # (2026-11-21 to now) the pool half was refused and console devnet
+      # creation stopped at its first IPAM address (devnet-humid, 2026-11-26).
       #
       # The pool is not limited here: AllocateAddress could also take an
-      # address from Amazon's pool. dash-network-go only ever asks the owned
-      # IPAM pool (IpamPoolId); the statement above is what limits the CIDR
-      # calls to that pool.
+      # address from Amazon's pool, which involves no pool resource.
+      # dash-network-go only ever asks the owned IPAM pool (IpamPoolId); the
+      # statements above are what limit the pool calls to that pool.
       {
         Sid       = "DevnetAddresses"
         Effect    = "Allow"
         Action    = ["ec2:AllocateAddress"]
-        Resource  = ["*"]
+        Resource  = ["${local.ec2_arn}:elastic-ip/*"]
         Condition = { StringEquals = { "aws:RequestTag/dashnet:managed-by" = "dash-network-go" } }
+      },
+      {
+        Sid      = "DevnetAddressPool"
+        Effect   = "Allow"
+        Action   = ["ec2:AllocateAddress"]
+        Resource = data.aws_vpc_ipam_pool.owned.arn
       },
       {
         Sid       = "DevnetAddressesOwned"
