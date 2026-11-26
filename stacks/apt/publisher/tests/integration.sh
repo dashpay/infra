@@ -137,14 +137,14 @@ ok "refused without a keyring, and with the primary secret key"
 
 expect 2 "not a release tag" publish 'v5.1.0;id'
 make_release v5.1.0-alpha.1 '5.1.0~alpha.1-1'
-expect 2 "are not published" publish v5.1.0-alpha.1
+expect 3 "SKIPPED: v5.1.0-alpha.1: prereleases named 'alpha' are not published" publish v5.1.0-alpha.1
 expect 2 "has no SHA256SUMS" publish v9.9.9
 make_release v5.1.0-rc.1 '5.1.0~rc.1-1'
 SUMS="" expect 2 "does not carry sha256sums_sha256" publish v5.1.0-rc.1
 SUMS="$(sums_of v5.1.0-rc.1 | tr a-f A-F)" expect 2 "64 lowercase hex digits" publish v5.1.0-rc.1
 SUMS="$(sums_of v5.1.0-rc.1)" expect 2 "without a release tag" publish
 [ ! -e "$REPO/dashmate" ] || fail "a refused run wrote something"
-ok "refused a bad tag, an alpha, a release that does not exist, and a tag without the sha256 of its SHA256SUMS"
+ok "refused a bad tag, a release that does not exist, and a tag without the sha256 of its SHA256SUMS; skipped an alpha"
 
 # --- empty suites, signed, from the first run -----------------------------------
 
@@ -160,7 +160,7 @@ ok "apt-get update accepts the signed, empty stable"
 make_release v5.1.0-dev.4 '5.1.0~~dev.4-1'
 expect 0 "dev: + amd64 5.1.0~~dev.4-1" publish v5.1.0-dev.4
 sign_release v5.1.0-rc.1 "$MAINTAINER"
-expect 0 "v5.1.0-rc.1: SHA256SUMS is the file the request names" publish v5.1.0-rc.1
+expect 0 "PUBLISHED: v5.1.0-rc.1 is in testing, dev as 5.1.0~rc.1-1" publish v5.1.0-rc.1
 carries stable ""
 carries testing "5.1.0~rc.1-1"
 carries dev "5.1.0~rc.1-1 5.1.0~~dev.4-1"

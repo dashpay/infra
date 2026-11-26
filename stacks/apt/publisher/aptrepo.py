@@ -26,6 +26,13 @@ class RepoError(Exception):
     """The input is not something this repository publishes."""
 
 
+class NotPublished(RepoError):
+    """A well-formed request for a kind of release this repository leaves out.
+
+    Nothing is wrong with the release or the request: the answer is "skipped".
+    """
+
+
 # --- release tags and Debian versions -------------------------------------
 #
 # The same grammar as packages/dashmate/scripts/deb-version.mjs in
@@ -90,7 +97,7 @@ def suites_for(tag: Tag, signed: bool) -> tuple[str, ...]:
     try:
         return _PRERELEASE_SUITES[tag.label]
     except KeyError:
-        raise RepoError(
+        raise NotPublished(
             f"{tag.name}: prereleases named {tag.label!r} are not published; "
             f"only {', '.join(sorted(_PRERELEASE_SUITES))}"
         ) from None
@@ -131,7 +138,7 @@ def parse_request(tag: str, sums_sha256: str) -> Request | None:
         raise RepoError(
             f"{parsed.name}: sha256sums_sha256 must be 64 lowercase hex digits, got {sums_sha256[:80]!r}"
         )
-    suites_for(parsed, False)  # refuses a kind of prerelease that is left out
+    suites_for(parsed, False)  # NotPublished for a kind of prerelease that is left out
     return Request(tag=parsed, sums_sha256=sums_sha256)
 
 

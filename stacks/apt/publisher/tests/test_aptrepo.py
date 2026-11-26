@@ -109,8 +109,16 @@ class Requests(unittest.TestCase):
             aptrepo.parse_request("", self.DIGEST)
         with self.assertRaisesRegex(RepoError, "not a release tag"):
             aptrepo.parse_request("v5.1", self.DIGEST)
-        with self.assertRaisesRegex(RepoError, "are not published"):
-            aptrepo.parse_request("v5.1.0-alpha.1", self.DIGEST)
+
+    def test_a_kind_that_is_left_out_is_skipped_not_refused(self):
+        for name in ("v5.1.0-alpha.1", "v5.1.0-pr.1234.1", "v5.0.0-hotfix.1"):
+            with self.assertRaisesRegex(aptrepo.NotPublished, "are not published", msg=name):
+                aptrepo.parse_request(name, self.DIGEST)
+        # A request that is not well-formed is refused, whatever its kind.
+        for request in (("v5.1.0-alpha.1", ""), ("v5.1.0-alpha.1", "0" * 63), ("v5.1.0-alpha_1", self.DIGEST)):
+            with self.assertRaises(RepoError, msg=request) as caught:
+                aptrepo.parse_request(*request)
+            self.assertNotIsInstance(caught.exception, aptrepo.NotPublished, msg=request)
 
     def test_refuses_any_other_sums(self):
         request = aptrepo.parse_request("v5.1.0", self.DIGEST)

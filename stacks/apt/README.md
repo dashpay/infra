@@ -79,6 +79,25 @@ not what `SHA256SUMS` lists; a version is already published with other bytes
 (a rebuild needs a new Debian revision); or what is published does not
 verify against the keyring.
 
+### What a run reports
+
+The publisher's exit status says how the run ended, and one line of its log
+(group `/aws/codebuild/dashmate-apt-publish`) says why:
+
+| Exit | Log line | Meaning |
+|---|---|---|
+| 0 | `PUBLISHED: <tag> is in <suites> as <version>` | Done. A run without a tag has no such line |
+| 1 | `NEEDS A PERSON: <other tag>: ...` | Done, and a release **other than the requested one** needs a person: a final release waiting for `stable` whose `SHA256SUMS` or signature does not check out. The requested release is published all the same and has its `PUBLISHED:` line |
+| 2 | `REFUSED: ...` | The run stopped. A bad request or a bad release is refused before anything is written |
+| 3 | `SKIPPED: ...` | The tag is a release tag of a kind this repository leaves out (`alpha`, `pr`, `hotfix`: anything but a final release, `dev`, `beta` and `rc`). Nothing was read or written |
+
+The state machine does not interpret this: any exit status but 0 fails the
+build, and the execution ends `FAILED` with the build as its cause. The
+status is in the cause, in the build phase's message `Error while executing
+command: python3 publish.py. Reason: exit status <n>`, which is where the
+job in `dashpay/platform` reads it. An execution that the state machine
+refused itself has the error `Publisher.RequestRefused` and no build.
+
 The daily run sends `{}`: no tag and no sha256. It adds no release. What it
 moves into `stable` is already in `testing`, byte for byte, and listed in a
 `SHA256SUMS` a maintainer signed.

@@ -17,7 +17,17 @@ rules (which release goes where, what a valid index looks like) are in
 aptrepo.py; this file does the I/O. Standard library only: nothing is
 installed at run time in the job that holds the key.
 
-Exit status: 0 done, 1 published but something needs a person, 2 refused.
+Exit status, and the line of the log that goes with it:
+
+0  done. With a tag: `PUBLISHED: <tag> ...`.
+1  done, and a release other than the requested one needs a person:
+   `NEEDS A PERSON: <tag>: ...`. With a tag, that release is published all
+   the same and has its `PUBLISHED:` line.
+2  `REFUSED: ...`. The run stopped there. A bad request or a bad release is
+   refused before anything is written. A failure while writing can leave a
+   pool file that no index lists, or some suites written and others not.
+3  `SKIPPED: ...`. The tag is a release tag of a kind this repository leaves
+   out (aptrepo.py, _PRERELEASE_SUITES). Nothing was read or written.
 """
 
 from __future__ import annotations
@@ -406,6 +416,7 @@ class Run:
     withdrawn: set[str] = field(default_factory=set)
     suites: dict[str, Suite] = field(default_factory=dict)
     sums_read: dict[str, tuple[dict[str, str], bool] | None] = field(default_factory=dict)
+    requested: str | None = None
     problems: list[str] = field(default_factory=list)
 
     def prepare_keys(self) -> None:
@@ -540,6 +551,8 @@ class Run:
                 if aptrepo.add_stanza(self.suites[name].packages[arch], stanza):
                     self.suites[name].changed = True
                     log(f"{name}: + {arch} {stanza.version}")
+        versions = sorted({stanza.version for stanza in stanzas.values()})
+        self.requested = f"{tag.name} is in {', '.join(targets)} as {', '.join(versions)}"
 
     def fetch_deb(self, tag: aptrepo.Tag, arch: str, asset: str, sha256: str) -> Stanza:
         target = self.work / "package.deb"
@@ -697,6 +710,9 @@ class Run:
         for name in SUITES:
             self.publish_suite(self.suites[name], signer, now)
         self.storage.put("dashmate-archive-keyring.gpg", self.keyring.read_bytes(), "application/pgp-keys", "public, max-age=300")
+        # Said only now, with every suite written.
+        if self.requested is not None:
+            log(f"PUBLISHED: {self.requested}")
 
 
 def main() -> int:
@@ -714,6 +730,9 @@ def main() -> int:
         job = Run(config=config, storage=storage, gpg=Gpg(work), work=work)
         try:
             job.execute()
+        except aptrepo.NotPublished as error:
+            log(f"SKIPPED: {error}")
+            return 3
         except RepoError as error:
             log(f"REFUSED: {error}")
             return 2

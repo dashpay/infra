@@ -200,6 +200,7 @@ class Publisher(unittest.TestCase):
         digest = self.make_release("v5.1.0-rc.1", "5.1.0~rc.1-1")
         output = self.expect(0, f"v5.1.0-rc.1: SHA256SUMS is the file the request names, sha256 {digest}", "v5.1.0-rc.1", digest)
         self.assertNotIn("REFUSED", output)
+        self.assertIn("PUBLISHED: v5.1.0-rc.1 is in testing, dev as 5.1.0~rc.1-1\n", output)
         self.assertEqual(self.carries("stable"), [])
         self.assertEqual(self.carries("testing"), ["5.1.0~rc.1-1"])
         self.assertEqual(self.carries("dev"), ["5.1.0~rc.1-1"])
@@ -252,6 +253,49 @@ class Publisher(unittest.TestCase):
         before = self.tree()
         self.expect(2, "REFUSED: v5.1.0-rc.1: the request does not carry sha256sums_sha256", "v5.1.0-rc.1")
         self.assertEqual(self.tree(), before)
+
+    # -- what a run says about the release it was asked for --
+
+    def test_a_kind_that_is_left_out_is_skipped(self):
+        digest = self.make_release("v5.1.0-alpha.1", "5.1.0~alpha.1-1")
+        output = self.expect(3, "SKIPPED: v5.1.0-alpha.1: prereleases named 'alpha' are not published", "v5.1.0-alpha.1", digest)
+        self.assertNotIn("REFUSED", output)
+        self.assertEqual(self.tree(), {})
+        # No release has to exist for it, and a published repository is left alone.
+        self.expect(0, "dev: published, empty")
+        before = self.tree()
+        self.expect(3, "SKIPPED: v5.1.0-pr.1234.1", "v5.1.0-pr.1234.1", "0" * 64)
+        self.assertEqual(self.tree(), before)
+        # Without the sha256 it is a request that is refused, not skipped.
+        self.expect(2, "REFUSED: v5.1.0-alpha.1: the request does not carry sha256sums_sha256", "v5.1.0-alpha.1")
+
+    def test_a_problem_with_another_release_is_told_apart(self):
+        # v5.1.0 waits in testing for a signature. Then its SHA256SUMS changes
+        # under the signature it got: that needs a person.
+        digest = self.make_release("v5.1.0", "5.1.0-1")
+        self.expect(0, "PUBLISHED: v5.1.0 is in testing, dev as 5.1.0-1", "v5.1.0", digest)
+        self.sign_release("v5.1.0", self.maintainer)
+        (self.releases / "v5.1.0" / "dashmate-extra.txt").write_text("added later\n")
+        self.write_sums("v5.1.0")
+
+        # Another release is asked for: it is published, and says so, and the
+        # run still ends 1 for the first one.
+        digest = self.make_release("v5.1.1-rc.1", "5.1.1~rc.1-1")
+        output = self.expect(1, "PUBLISHED: v5.1.1-rc.1 is in testing, dev as 5.1.1~rc.1-1\n", "v5.1.1-rc.1", digest)
+        self.assertIn("NEEDS A PERSON: v5.1.0: SHA256SUMS.asc: gpgv reports BADSIG", output)
+        self.assertNotIn("NEEDS A PERSON: v5.1.1-rc.1", output)
+        self.assertNotIn("REFUSED", output)
+        self.assertEqual(self.carries("testing"), ["5.1.0-1", "5.1.1~rc.1-1"])
+        self.assertEqual(self.carries("stable"), [])
+
+        # The run without a tag reports it as well, and has no release of its own to report.
+        output = self.expect(1, "NEEDS A PERSON: v5.1.0: SHA256SUMS.asc: gpgv reports BADSIG")
+        self.assertNotIn("PUBLISHED:", output)
+
+    def test_a_refused_release_is_not_reported_as_published(self):
+        checked = self.make_release("v5.1.0-rc.2", "5.1.0~rc.2-1")
+        self.make_release("v5.1.0-rc.2", "5.1.0~rc.2-1", "another build")
+        self.assertNotIn("PUBLISHED:", self.expect(2, "REFUSED: v5.1.0-rc.2", "v5.1.0-rc.2", checked))
 
     # -- stable --
 
