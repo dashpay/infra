@@ -1,5 +1,5 @@
 [Unit]
-Description=Look for new Platform releases every two minutes
+Description=Every two minutes: tend Platform releases that are under way (new ones arrive by a wake; the feed is read every 15 min regardless)
 Documentation=https://github.com/dashpay/infra/tree/master/platform-sync
 
 [Timer]

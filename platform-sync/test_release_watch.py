@@ -89,13 +89,20 @@ class Pass(unittest.TestCase):
         self.hub, self.gate, self.ci_ok = {}, "ready", True
         w = self.w
         w.c["notify"] = {"channel": "C0TEST", "mcp_url": "http://127.0.0.1:1/mcp", "bearer_file": "/nonexistent"}
+        # These tests publish and tick: the feed is read on every pass, as if each were woken.
+        w.c["feed_seconds"] = 0
+        self.feed_reads = 0
         w.post = lambda text, thread=None: (self.sent.append((thread, text)), "111.222")[1]
         w.hub_has = lambda image, tag: self.hub.get(f"{image}:{tag}", False)
         w.tenderdash_source = None
         self._get = rw.get
-        rw.get = lambda url, headers=None, timeout=20: (
-            (200, self.feed.encode()) if url.endswith("releases.atom")
-            else (200, b"image: 'dashpay/tenderdash:2.0.0-dev.3',") if "getBaseConfigFactory" in url else (404, b""))
+
+        def fake_get(url, headers=None, timeout=20):
+            if url.endswith("releases.atom"):
+                self.feed_reads += 1
+                return 200, self.feed.encode()
+            return (200, b"image: 'dashpay/tenderdash:2.0.0-dev.3',") if "getBaseConfigFactory" in url else (404, b"")
+        rw.get = fake_get
 
         def read_ci(rel):
             if not self.ci_ok:
@@ -130,6 +137,58 @@ class Pass(unittest.TestCase):
         self.assertEqual(self.requests(), [])
         self.assertEqual(self.sent, [])
         self.assertEqual(ps.read_json(f"{self.root}/state/release-watch.json")["releases"], {})
+
+    def test_the_feed_is_read_on_a_wake_and_otherwise_only_now_and_then(self):
+        w = self.w
+        w.c["feed_seconds"], w.c["wake_second_look_seconds"] = 900, 0
+        self.publish("v5.1.0-rc.1")
+        before = self.feed_reads
+        w.tick()                      # the timer, two minutes after the last read: GitHub is not asked
+        self.assertEqual(self.feed_reads, before)
+        self.assertEqual(self.sent, [])
+        w.tick(woken=True)            # GitHub's webhook: read now
+        self.assertEqual(self.feed_reads, before + 1)
+        self.assertEqual(len(self.sent), 1)
+        w.tick()
+        self.assertEqual(self.feed_reads, before + 1)
+        w.state["feedAt"] -= 901      # fifteen minutes on, a wake may have been lost: read anyway
+        self.publish("v5.1.0-rc.2")
+        w.tick()
+        self.assertEqual(self.feed_reads, before + 2)
+        self.assertIn("v5.1.0-rc.2", w.state["releases"])
+
+    def test_a_woken_pass_that_finds_nothing_new_reads_the_feed_once_more(self):
+        w, slept = self.w, []
+        w.c["feed_seconds"], w.c["wake_second_look_seconds"] = 900, 20
+        real_sleep, rw.time.sleep = rw.time.sleep, lambda s: (slept.append(s), self.publish("v5.1.0-rc.1"))
+        try:
+            before = self.feed_reads
+            w.tick(woken=True)        # the webhook was ahead of the feed
+        finally:
+            rw.time.sleep = real_sleep
+        self.assertEqual((slept, self.feed_reads), ([20], before + 2))
+        self.assertIn("v5.1.0-rc.1", w.state["releases"])
+        slept.clear()
+        rw.time.sleep = slept.append
+        try:
+            self.publish("v5.1.0-rc.2")
+            w.tick(woken=True)        # found at once: no second read
+        finally:
+            rw.time.sleep = real_sleep
+        self.assertEqual(slept, [])
+
+    def test_an_unreadable_feed_is_tried_again_on_the_next_pass(self):
+        w = self.w
+        w.c["feed_seconds"] = 900
+        w.state["feedAt"] -= 901
+        ok, rw.get = rw.get, lambda url, headers=None, timeout=20: (503, b"")
+        try:
+            w.tick()
+        finally:
+            rw.get = ok
+        self.publish("v5.1.0-rc.1")
+        w.tick()                      # the failed read did not count as a read
+        self.assertIn("v5.1.0-rc.1", w.state["releases"])
 
     def test_stable_release_is_not_followed(self):
         self.publish("v5.1.0")

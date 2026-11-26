@@ -1,0 +1,15 @@
+[Unit]
+Description=Look for a new Platform release as soon as GitHub's release webhook says so
+Documentation=https://github.com/dashpay/infra/tree/master/platform-sync
+
+# The wake listener (unit infraclaw-wake@platform-release, not part of this
+# directory) creates a file here when the status console's wake hook
+# `platform-release` fires. The service removes it as it starts, so a wake that
+# lands during a pass starts one more pass when it ends. Without the listener
+# this directory never exists and the unit waits for nothing.
+[Path]
+DirectoryNotEmpty=/run/infraclaw-wake/platform-release
+Unit=platform-sync-release-watch.service
+
+[Install]
+WantedBy=paths.target

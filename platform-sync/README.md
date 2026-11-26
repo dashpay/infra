@@ -52,7 +52,8 @@ without test data; pass such an image as `image` once it exists.
 
 ## Releases: replayed without being asked
 
-`release_watch.py` (timer `platform-sync-release-watch.timer`, every two
+`release_watch.py` (started by `platform-sync-release-watch.path` when GitHub's
+release webhook arrives, and by `platform-sync-release-watch.timer` every two
 minutes) replays every **dev and rc release** of `dashpay/platform` on both
 networks:
 
@@ -80,9 +81,21 @@ What it does not do:
 - If CI ends without the image, it says so once and keeps looking for 72
   hours, so a rerun that publishes the image still starts the replay.
 
-Why it asks instead of being told: the host has no public address, so a GitHub
-webhook cannot reach it. New tags come from `releases.atom`, the image from
-Docker Hub's API, and the state of CI from the GitHub API without a token
+How it hears of a release: the host has no public address, so a GitHub webhook
+cannot reach it directly. The repository's `release` webhook goes to the status
+console, which is public, and a listener on this host is told that something
+happened (the wake hook `platform-release`; `deploy/WAKE-HOOKS.md` in
+`dashpay/status`). The listener creates `/run/infraclaw-wake/platform-release/wake`,
+on which the `.path` unit starts a pass. A wake carries nothing, so the pass
+reads `releases.atom` itself; if the tag is not in the feed yet it reads once
+more twenty seconds later. Without a wake the feed is read every fifteen
+minutes (`feed_seconds`), which is what is left of the polling: until 2026-11-26
+it was read every two minutes. The two-minute timer stays, for releases that are
+under way; a pass with none of those and a fresh feed asks nobody anything. If
+the listener is not installed, nothing breaks: releases are noticed up to
+fifteen minutes late.
+
+The image comes from Docker Hub's API, and the state of CI from the GitHub API without a token
 (two calls every five to ten minutes while a release waits, none otherwise). If GitHub
 does not answer for 45 minutes while the image is already on Docker Hub, the
 replay starts anyway and the message says that CI could not be read.
@@ -303,7 +316,7 @@ Cancelling the GitHub job stops the waiting, not the replay.
 | `platform_sync.py` | The daemon and its command line |
 | `request.py` | The client the workflow runs inside the runner |
 | `release_watch.py` | Asks for a replay of every new dev and rc release, and reports it |
-| `systemd/platform-sync-release-watch.{service,timer}` | Runs it every two minutes |
+| `systemd/platform-sync-release-watch.{service,path,timer}` | Runs it on a wake from GitHub's release webhook, and every two minutes |
 | `compose.override.yml` | Data location, ports, log and resource caps |
 | `pscompose` | `docker compose` for one stack, for people |
 | `systemd/platform-sync@.service` | One daemon per network |

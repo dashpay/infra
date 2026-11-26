@@ -9,6 +9,11 @@ ConditionPathIsMountPoint=/srv/platform-sync
 [Service]
 Type=oneshot
 User=root
+# Started by a wake (the .path unit) or by the timer. GitHub sends three
+# deliveries for one release within a second: wait for them, then take the wake
+# off the listener's spool ("+": outside this unit's read-only view) and look once.
+ExecStartPre=/usr/bin/sleep 3
+ExecStartPre=+/usr/bin/rm -f /run/infraclaw-wake/platform-release/wake
 ExecStart=/usr/bin/python3 -u /opt/platform-sync/release_watch.py tick
 TimeoutStartSec=300
 UMask=0077

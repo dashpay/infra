@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """release-watch: replay every dev and rc release of Platform, without being asked.
 
-Run every two minutes by a systemd timer. For each new release of
-dashpay/platform whose tag is a dev or rc build it
+Run by systemd: at once when GitHub's release webhook wakes it, and every two
+minutes by a timer. For each new release of dashpay/platform whose tag is a dev
+or rc build it
 
   1. says so (one message, and everything later goes in its thread),
   2. waits until the release workflow has published the Drive image,
@@ -12,9 +13,14 @@ dashpay/platform whose tag is a dev or rc build it
 It only writes request files and reads result files: the same door the GitHub
 runner uses. What a request may contain is decided by platform_sync.py.
 
-The host has no public address, so a GitHub webhook cannot reach it. The watcher
-asks instead: the releases feed for new tags, Docker Hub for the image, and the
-GitHub API (without a token, a few calls an hour) for the state of CI.
+The host has no public address, so a GitHub webhook cannot reach it directly.
+The repository's webhook goes to the status console, which is public, and a
+listener on this host is told that something happened (a "wake hook":
+dashpay/status, deploy/WAKE-HOOKS.md). A wake carries nothing, so the watcher
+still finds out for itself: the releases feed for new tags, Docker Hub for the
+image, and the GitHub API (without a token, a few calls an hour) for the state
+of CI. It reads the feed when it is woken, and every fifteen minutes in case a
+wake was lost. The passes in between only tend releases that are under way.
 
 Python standard library only. The operating guide is README.md in this directory.
 """
@@ -40,7 +46,12 @@ DEFAULTS = {
     "image_job": "Release Drive image",
     "image": "dashpay/drive",
     "networks": ["testnet", "mainnet"],
-    "ci_poll_seconds": 600,       # how often CI is asked while the image is not on Docker Hub
+    # The feed is read on a wake (systemd sets TRIGGER_PATH when the .path unit started the
+    # pass) and at least this often. A woken pass that finds nothing new reads it once more
+    # a little later: the webhook can be ahead of the feed.
+    "feed_seconds": 900,
+    "wake_second_look_seconds": 20,
+    "ci_poll_seconds": 600,      # how often CI is asked while the image is not on Docker Hub
     "ci_confirm_seconds": 300,    # and once it is
     "ci_unreadable_minutes": 45,  # image on Docker Hub but GitHub does not answer: start after this long
     "give_up_hours": 72,          # no image this long after the release: stop waiting
@@ -229,29 +240,37 @@ class Watch:
             box.pop(0)
 
     # ---- finding releases -----------------------------------------------
+    def feed_due(self, woken):
+        return woken or self.state is None or time.time() - self.state.get("feedAt", 0) >= self.c["feed_seconds"]
+
     def discover(self):
+        """Reads the releases feed. Returns how many tags were new, or None when it could not be read."""
         status, body = get(f"{self.web}/releases.atom")
         if status != 200:
             ps.log(f"releases feed not readable (HTTP {status})")
-            return
+            return None
         try:
             tags = feed_tags(body)
         except ET.ParseError as e:
             ps.log("releases feed not parseable:", e)
-            return
+            return None
         if self.state is None:
             # The first run starts here: nothing that is already published is replayed.
-            self.state = {"schema": 1, "since": ps.iso(), "known": tags, "releases": {}}
+            self.state = {"schema": 1, "since": ps.iso(), "known": tags, "releases": {}, "feedAt": int(time.time())}
             ps.log(f"first run: {len(tags)} published releases noted, none replayed")
-            return
+            return 0
+        self.state["feedAt"] = int(time.time())
+        new = 0
         for tag in reversed(tags):  # oldest first, so that messages come in order
             if tag in self.state["known"]:
                 continue
+            new += 1
             self.state["known"] = (self.state["known"] + [tag])[-200:]
             if re.match(self.c["tag_pattern"], tag) and version_key(tag):
                 self.track(tag)
             else:
                 ps.log(f"{tag}: published, not a tag this watcher replays")
+        return new
 
     def track(self, tag, announce=True):
         rel = {"tag": tag, "version": tag[1:], "stage": "waiting", "seenAt": ps.iso(), "requests": {}, "results": {},
@@ -413,8 +432,12 @@ class Watch:
             rel["doneAt"] = ps.iso()
 
     # ---- one pass -------------------------------------------------------
-    def tick(self):
-        self.discover()
+    def tick(self, woken=False):
+        if self.feed_due(woken):
+            new = self.discover()
+            if woken and not new and self.state is not None:
+                time.sleep(self.c["wake_second_look_seconds"])
+                self.discover()
         if self.state is None:
             return
         for rel in list(self.state["releases"].values()):
@@ -444,6 +467,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("tick", help="one pass; what the timer runs")
     t.add_argument("--dry-run", action="store_true", help="read everything, write nothing, send nothing")
+    t.add_argument("--woken", action="store_true", help="read the releases feed now, as after a wake")
     sub.add_parser("status", help="what is being followed")
     a = sub.add_parser("add", help="follow a release that is already published")
     a.add_argument("--tag", required=True)
@@ -453,10 +477,11 @@ def main(argv=None):
     args = p.parse_args(argv)
     w = Watch(ps.load_config(args.config), dry=getattr(args, "dry_run", False))
     if args.cmd == "tick":
-        w.tick()
+        # systemd names the watched directory when the .path unit, that is a wake, started this pass.
+        w.tick(woken=args.woken or bool(os.environ.get("TRIGGER_PATH")))
     elif args.cmd == "status":
         s = w.state or {}
-        print(json.dumps({"since": s.get("since"), "releases": [
+        print(json.dumps({"since": s.get("since"), "feedReadAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(s["feedAt"])) if s.get("feedAt") else None, "releases": [
             {k: r.get(k) for k in ("tag", "stage", "seenAt", "gate", "run", "tenderdash", "requests", "results",
                                    "waitNote", "ciError") if r.get(k) not in (None, {}, [])}
             | {"unsent": len(r.get("outbox") or [])}
