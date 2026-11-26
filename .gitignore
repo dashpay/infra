@@ -5,3 +5,7 @@
 crash.log
 *.auto.tfvars
 *_override.tf
+
+# Python
+__pycache__/
+*.pyc

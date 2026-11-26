@@ -1,0 +1,11 @@
+[Unit]
+Description=Look for new Platform releases every two minutes
+Documentation=https://github.com/dashpay/infra/tree/master/platform-sync
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

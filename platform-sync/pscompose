@@ -1,0 +1,13 @@
+#!/bin/bash
+# pscompose <testnet|mainnet> <docker compose arguments>
+# Runs docker compose for one platform-sync stack: dashmate's compose files
+# plus the platform-sync override, with the environment dashmate rendered.
+set -euo pipefail
+n=${1:?network}; shift
+case "$n" in testnet|mainnet) ;; *) echo "unknown network: $n" >&2; exit 2;; esac
+E=/srv/platform-sync/state/$n.env
+cf=$(grep -m1 '^COMPOSE_FILE=' "$E" | cut -d= -f2-)
+sep=$(grep -m1 '^COMPOSE_PATH_SEPARATOR=' "$E" | cut -d= -f2-)
+export COMPOSE_FILE="${cf}${sep:-:}/srv/platform-sync/compose.override.yml"
+cd /srv/platform-sync/dashmate   # COMPOSE_FILE holds paths relative to the dashmate package
+exec docker compose --env-file "$E" --env-file "/srv/platform-sync/state/$n.sync.env" "$@"
