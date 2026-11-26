@@ -25,6 +25,14 @@ TOOLS = ("gpg", "gpgv", "gpgconf", "dpkg-deb")
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves the releases and keeps the paths that were asked for."""
+
+    asked: list[str] = []
+
+    def do_GET(self):
+        self.asked.append(self.path)
+        super().do_GET()
+
     def log_message(self, *args):
         pass
 
@@ -37,6 +45,8 @@ class Publisher(unittest.TestCase):
         cls.addClassCleanup(shutil.rmtree, cls.top, ignore_errors=True)
         cls.gnupg = cls.top / "gnupg"
         cls.gnupg.mkdir(mode=0o700)
+        # Cleanups run last first: the agent is stopped, then its socket directory removed.
+        cls.addClassCleanup(subprocess.run, ["gpgconf", "--homedir", str(cls.gnupg), "--remove-socketdir"], capture_output=True)
         cls.addClassCleanup(subprocess.run, ["gpgconf", "--homedir", str(cls.gnupg), "--kill", "all"], capture_output=True)
 
         archive = cls.new_key("Dashmate test archive <archive@example.invalid>", "cert")
@@ -50,6 +60,9 @@ class Publisher(unittest.TestCase):
         cls.signing_key.write_bytes(
             cls.gpg("--pinentry-mode", "loopback", "--passphrase", "", "--export-secret-subkeys", f"{subkey}!")
         )
+        # With the primary secret key, which the publisher refuses to sign with.
+        cls.whole_key = cls.top / "whole.key"
+        cls.whole_key.write_bytes(cls.gpg("--pinentry-mode", "loopback", "--passphrase", "", "--export-secret-keys", archive))
 
         cls.maintainer = cls.new_key("Test maintainer <maintainer@example.invalid>", "sign")
         cls.outsider = cls.new_key("Somebody else <outsider@example.invalid>", "sign")
@@ -125,8 +138,13 @@ class Publisher(unittest.TestCase):
         signature.unlink(missing_ok=True)
         self.gpg("--local-user", key, "--armor", "--detach-sign", "--output", str(signature), str(self.releases / tag / "SHA256SUMS"))
 
-    def publish(self, tag="", sums_sha256=""):
-        """One run of the publisher. Returns its exit status and what it logged."""
+    def publish(self, tag=None, sums_sha256=None, **changed):
+        """One run of the publisher. Returns its exit status and what it logged.
+
+        Without a tag and a sha256 their variables are not set at all, as in
+        the daily run. `changed` replaces other variables.
+        """
+        QuietHandler.asked.clear()
         env = {
             "PATH": os.environ["PATH"],
             "REPO_DIR": str(self.repo),
@@ -137,14 +155,17 @@ class Publisher(unittest.TestCase):
             "WITHDRAWN_FILE": str(self.top / "withdrawn.txt"),
             "RELEASE_BASE_URL": f"http://127.0.0.1:{self.server.server_address[1]}/{self.name}",
             "MIN_RESIGN_AGE_HOURS": "0",
-            "RELEASE_TAG": tag,
-            "SHA256SUMS_SHA256": sums_sha256,
+            **changed,
         }
+        if tag is not None:
+            env["RELEASE_TAG"] = tag
+        if sums_sha256 is not None:
+            env["SHA256SUMS_SHA256"] = sums_sha256
         proc = subprocess.run([sys.executable, str(PUBLISHER)], env=env, capture_output=True, text=True)
         return proc.returncode, proc.stdout + proc.stderr
 
-    def expect(self, status, text, *request):
-        got, output = self.publish(*request)
+    def expect(self, status, text, *request, **changed):
+        got, output = self.publish(*request, **changed)
         self.assertEqual(got, status, output)
         self.assertIn(text, output)
         return output
@@ -176,6 +197,10 @@ class Publisher(unittest.TestCase):
 
     def pool(self):
         return sorted(path.name for path in (self.repo / "dashmate" / "pool").rglob("*.deb"))
+
+    def asked(self, name):
+        """How often the last run asked the release server for a file of that name."""
+        return sum(1 for path in QuietHandler.asked if path.rsplit("/", 1)[1] == name)
 
     # -- the daily run --
 
@@ -244,9 +269,49 @@ class Publisher(unittest.TestCase):
     def test_refuses_a_tag_without_the_sha256_and_writes_nothing(self):
         digest = self.make_release("v5.1.0-rc.1", "5.1.0~rc.1-1")
         self.expect(2, "REFUSED: v5.1.0-rc.1: the request does not carry sha256sums_sha256", "v5.1.0-rc.1")
-        self.expect(2, "REFUSED: v5.1.0-rc.1: sha256sums_sha256 must be 64 lowercase hex digits", "v5.1.0-rc.1", digest.upper())
-        self.expect(2, "REFUSED: v5.1.0-rc.1: sha256sums_sha256 must be 64 lowercase hex digits", "v5.1.0-rc.1", digest[:63])
-        self.expect(2, "REFUSED: a sha256 of SHA256SUMS was given without a release tag", "", digest)
+        self.expect(2, "REFUSED: v5.1.0-rc.1: the request does not carry sha256sums_sha256", "v5.1.0-rc.1", "")
+        for bad in (digest.upper(), digest[:63], f" {digest}", f"{digest}\n", f"sha256:{digest}"):
+            self.expect(2, "REFUSED: v5.1.0-rc.1: sha256sums_sha256 must be 64 lowercase hex digits", "v5.1.0-rc.1", bad)
+        self.expect(2, "REFUSED: a sha256 of SHA256SUMS was given without a release tag", None, digest)
+        self.assertEqual(self.asked("SHA256SUMS"), 0)
+        self.assertEqual(self.tree(), {})
+
+    def test_an_empty_tag_is_refused_and_is_not_a_refresh(self):
+        digest = self.make_release("v5.1.0-rc.1", "5.1.0~rc.1-1")
+        for request in (("", ""), ("", None), ("", digest), (" ", digest), ("v5.1.0-rc.1\n", digest)):
+            output = self.expect(2, "is not a release tag", *request)
+            self.assertNotIn("published", output, request)
+        self.assertEqual(self.tree(), {})
+
+    def test_reads_the_requested_sums_once(self):
+        # A final release without a signature is looked at twice in a run: to
+        # add it, and as a release waiting for stable. Both see one download.
+        digest = self.make_release("v5.1.0", "5.1.0-1")
+        self.expect(0, "stable: 5.1.0-1 waits for a maintainer's signature on v5.1.0", "v5.1.0", digest)
+        self.assertEqual(self.asked("SHA256SUMS"), 1)
+        self.assertEqual(self.asked("dashmate_5.1.0-1_amd64.deb"), 1)
+
+    def test_writes_nothing_when_the_second_deb_is_bad(self):
+        # SHA256SUMS is the file the request names, and the arm64 deb, the
+        # second one fetched, is not what it lists.
+        digest = self.make_release("v5.1.0-rc.1", "5.1.0~rc.1-1")
+        with open(self.releases / "v5.1.0-rc.1" / "dashmate_5.1.0.rc.1-1_arm64.deb", "ab") as deb:
+            deb.write(b"x")
+        self.expect(2, "REFUSED: dashmate_5.1.0.rc.1-1_arm64.deb has sha256", "v5.1.0-rc.1", digest)
+        self.assertEqual(self.tree(), {})
+        self.expect(0, "dev: published, empty")
+        before = self.tree()
+        self.expect(2, "REFUSED: dashmate_5.1.0.rc.1-1_arm64.deb has sha256", "v5.1.0-rc.1", digest)
+        self.assertEqual(self.asked("dashmate_5.1.0.rc.1-1_amd64.deb"), 1)
+        self.assertEqual(self.tree(), before)
+
+    def test_writes_nothing_and_reports_nothing_without_a_signing_key(self):
+        digest = self.make_release("v5.1.0-rc.1", "5.1.0~rc.1-1")
+        output = self.expect(2, "REFUSED: the signing secret holds the primary secret key", "v5.1.0-rc.1", digest,
+                             SIGNING_KEY_FILE=str(self.whole_key))
+        self.assertIn("testing: + arm64 5.1.0~rc.1-1", output)  # it got as far as that
+        self.assertNotIn("PUBLISHED:", output)
+        self.assertNotIn("pool:", output)
         self.assertEqual(self.tree(), {})
 
         self.expect(0, "dev: published, empty")
@@ -268,6 +333,10 @@ class Publisher(unittest.TestCase):
         self.assertEqual(self.tree(), before)
         # Without the sha256 it is a request that is refused, not skipped.
         self.expect(2, "REFUSED: v5.1.0-alpha.1: the request does not carry sha256sums_sha256", "v5.1.0-alpha.1")
+        # Decided before anything is read: not the release, and not even the keyring.
+        self.expect(3, "SKIPPED: v5.1.0-alpha.1", "v5.1.0-alpha.1", digest, ARCHIVE_KEYRING=str(self.top / "none.gpg"))
+        self.assertEqual(QuietHandler.asked, [])
+        self.expect(2, "REFUSED: no archive keyring", "v5.1.0-rc.1", digest, ARCHIVE_KEYRING=str(self.top / "none.gpg"))
 
     def test_a_problem_with_another_release_is_told_apart(self):
         # v5.1.0 waits in testing for a signature. Then its SHA256SUMS changes

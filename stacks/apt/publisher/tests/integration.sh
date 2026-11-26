@@ -82,18 +82,24 @@ sums_of() { # tag -> the sha256 of the SHA256SUMS its release has now
 
 publish() { # [tag]. KEY, AGE, BASE, KEYRING, TO and SUMS change one input.
   # A request names its release's SHA256SUMS by sha256. Unless SUMS says
-  # otherwise, that is the file the release has now.
-  local sums=""
-  if [ -n "${SUMS+set}" ]; then
-    sums="$SUMS"
-  elif [ -n "${1:-}" ]; then
-    sums="$(printf '0%.0s' {1..64})"
-    [ ! -f "$REL/$1/SHA256SUMS" ] || sums="$(sums_of "$1")"
+  # otherwise, that is the file the release has now; SUMS=- leaves it out.
+  # Without a tag neither variable is set, as in the daily run: to the
+  # publisher a variable that is set and empty is a request.
+  local request=()
+  if [ "$#" -gt 0 ]; then
+    request+=("RELEASE_TAG=$1")
+    if [ -z "${SUMS+set}" ]; then
+      local SUMS
+      SUMS="$(printf '0%.0s' {1..64})"
+      [ ! -f "$REL/$1/SHA256SUMS" ] || SUMS="$(sums_of "$1")"
+    fi
   fi
-  REPO_DIR="${TO:-$REPO}" REPO_PREFIX=dashmate SIGNING_KEY_FILE="${KEY:-$W/signing.key}" \
+  [ -z "${SUMS+set}" ] || [ "$SUMS" = - ] || request+=("SHA256SUMS_SHA256=$SUMS")
+  env -u RELEASE_TAG -u SHA256SUMS_SHA256 "${request[@]}" \
+    REPO_DIR="${TO:-$REPO}" REPO_PREFIX=dashmate SIGNING_KEY_FILE="${KEY:-$W/signing.key}" \
     ARCHIVE_KEYRING="${KEYRING:-$W/keyring/dashmate-archive-keyring.gpg}" MAINTAINERS_DIR="$W/maintainers" \
     WITHDRAWN_FILE="$W/withdrawn.txt" RELEASE_BASE_URL="${BASE:-http://127.0.0.1:8082}" \
-    MIN_RESIGN_AGE_HOURS="${AGE:-0}" RELEASE_TAG="${1:-}" SHA256SUMS_SHA256="$sums" python3 "$HERE/publish.py"
+    MIN_RESIGN_AGE_HOURS="${AGE:-0}" python3 "$HERE/publish.py"
 }
 
 snapshot() { # the sha256 of every file of the repository, as one sha256
@@ -140,11 +146,13 @@ make_release v5.1.0-alpha.1 '5.1.0~alpha.1-1'
 expect 3 "SKIPPED: v5.1.0-alpha.1: prereleases named 'alpha' are not published" publish v5.1.0-alpha.1
 expect 2 "has no SHA256SUMS" publish v9.9.9
 make_release v5.1.0-rc.1 '5.1.0~rc.1-1'
+SUMS=- expect 2 "does not carry sha256sums_sha256" publish v5.1.0-rc.1
 SUMS="" expect 2 "does not carry sha256sums_sha256" publish v5.1.0-rc.1
 SUMS="$(sums_of v5.1.0-rc.1 | tr a-f A-F)" expect 2 "64 lowercase hex digits" publish v5.1.0-rc.1
 SUMS="$(sums_of v5.1.0-rc.1)" expect 2 "without a release tag" publish
+expect 2 "is not a release tag" publish ''
 [ ! -e "$REPO/dashmate" ] || fail "a refused run wrote something"
-ok "refused a bad tag, a release that does not exist, and a tag without the sha256 of its SHA256SUMS; skipped an alpha"
+ok "refused a bad tag, an empty one, a release that does not exist, and a tag without the sha256 of its SHA256SUMS; skipped an alpha"
 
 # --- empty suites, signed, from the first run -----------------------------------
 
@@ -187,7 +195,7 @@ make_release v5.1.1-rc.1 '5.1.1~rc.1-1' "replaced after the check"
 sign_release v5.1.1-rc.1 "$MAINTAINER"
 before="$(snapshot)"
 SUMS="$checked" expect 2 "and the request was made for $checked" publish v5.1.1-rc.1
-SUMS="" expect 2 "does not carry sha256sums_sha256" publish v5.1.1-rc.1
+SUMS=- expect 2 "does not carry sha256sums_sha256" publish v5.1.1-rc.1
 [ "$(snapshot)" = "$before" ] || fail "a refused request changed the repository"
 ok "refused a release whose SHA256SUMS is not the one its request names, and wrote nothing"
 expect 0 "testing: + amd64 5.1.1~rc.1-1" publish v5.1.1-rc.1
@@ -247,8 +255,10 @@ expect 2 "is already published with sha256" publish v5.1.1
 ok "refused other bytes under a published version"
 
 make_release v5.1.2-rc.1 '5.1.2~rc.1-1'
-echo "x" >> "$REL/v5.1.2-rc.1/dashmate_5.1.2.rc.1-1_amd64.deb"
+echo "x" >> "$REL/v5.1.2-rc.1/dashmate_5.1.2.rc.1-1_arm64.deb"
+before="$(snapshot)"
 expect 2 "SHA256SUMS says" publish v5.1.2-rc.1
+[ "$(snapshot)" = "$before" ] || fail "a release with one bad deb left the other in the pool"
 make_release v5.1.2-rc.2 '5.1.2~rc.3-1'
 mv "$REL/v5.1.2-rc.2/dashmate_5.1.2.rc.3-1_amd64.deb" "$REL/v5.1.2-rc.2/dashmate_5.1.2.rc.2-1_amd64.deb"
 mv "$REL/v5.1.2-rc.2/dashmate_5.1.2.rc.3-1_arm64.deb" "$REL/v5.1.2-rc.2/dashmate_5.1.2.rc.2-1_arm64.deb"

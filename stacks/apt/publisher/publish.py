@@ -5,8 +5,9 @@
    signature. Nothing unsigned is ever carried into a new index.
 2. With RELEASE_TAG and SHA256SUMS_SHA256: take that release's SHA256SUMS
    from GitHub and refuse it unless it is the file the request names by its
-   sha256. Then take the release's debs, check them against it, put them in
-   the pool and add them to the suites the release belongs in.
+   sha256. Then take the release's debs, check them against it and add them
+   to the suites the release belongs in. They go into the pool once every
+   check of the run has passed.
 3. Move final releases that a maintainer has signed since from `testing` into
    `stable`.
 4. Write, sign and upload each suite whose content changed or whose Release
@@ -23,11 +24,14 @@ Exit status, and the line of the log that goes with it:
 1  done, and a release other than the requested one needs a person:
    `NEEDS A PERSON: <tag>: ...`. With a tag, that release is published all
    the same and has its `PUBLISHED:` line.
-2  `REFUSED: ...`. The run stopped there. A bad request or a bad release is
-   refused before anything is written. A failure while writing can leave a
-   pool file that no index lists, or some suites written and others not.
+2  `REFUSED: ...`. The run stopped there. Nothing is written before the
+   request, the release, what is published and the signing key have all
+   been checked, so a refusal for any of those leaves the repository as it
+   was. A failure after that, while storing, can leave a pool file that no
+   index lists, or some suites written and others not.
 3  `SKIPPED: ...`. The tag is a release tag of a kind this repository leaves
-   out (aptrepo.py, _PRERELEASE_SUITES). Nothing was read or written.
+   out (aptrepo.py, _PRERELEASE_SUITES). Decided before anything is read;
+   nothing is written.
 """
 
 from __future__ import annotations
@@ -99,8 +103,9 @@ class Config:
     archive_keyring: Path
     maintainers: Path
     release_base_url: str
-    release_tag: str
-    sums_sha256: str
+    # None when the variable is not set. Set, even to nothing, it is a request.
+    release_tag: str | None
+    sums_sha256: str | None
     withdrawn: Path
     valid_days: int
     min_resign_age: timedelta
@@ -117,8 +122,8 @@ class Config:
             archive_keyring=Path(env("ARCHIVE_KEYRING") or HERE / "keyring" / "dashmate-archive-keyring.gpg"),
             maintainers=Path(env("MAINTAINERS_DIR") or HERE / "maintainers"),
             release_base_url=env("RELEASE_BASE_URL", "https://github.com/dashpay/platform/releases/download").rstrip("/"),
-            release_tag=env("RELEASE_TAG", "").strip(),
-            sums_sha256=env("SHA256SUMS_SHA256", "").strip(),
+            release_tag=env("RELEASE_TAG"),
+            sums_sha256=env("SHA256SUMS_SHA256"),
             withdrawn=Path(env("WITHDRAWN_FILE") or HERE / "withdrawn.txt"),
             valid_days=int(env("VALID_DAYS", "10")),
             min_resign_age=timedelta(hours=float(env("MIN_RESIGN_AGE_HOURS", "12"))),
@@ -246,6 +251,7 @@ class Gpg:
 
     def close(self) -> None:
         run(["gpgconf", "--homedir", str(self.home), "--kill", "all"], check=False)
+        run(["gpgconf", "--homedir", str(self.home), "--remove-socketdir"], check=False)
 
     def key_records(self, *args: str) -> list[dict]:
         """Keys and subkeys of a colon listing: kind, fingerprint, capabilities, secret."""
@@ -416,6 +422,7 @@ class Run:
     withdrawn: set[str] = field(default_factory=set)
     suites: dict[str, Suite] = field(default_factory=dict)
     sums_read: dict[str, tuple[dict[str, str], bool] | None] = field(default_factory=dict)
+    staged: list[tuple[Stanza, Path]] = field(default_factory=list)
     requested: str | None = None
     problems: list[str] = field(default_factory=list)
 
@@ -499,8 +506,9 @@ class Run:
         """SHA256SUMS of a release, and whether a maintainer signed it. None if it has none.
 
         With `request`, the file must be the one the request names. A release
-        is read once in a run: the requested release is the first one read,
-        and nothing later in the run sees another SHA256SUMS for it.
+        that was read is not read again in the run: the requested release is
+        the first one read, and nothing later in the run sees another
+        SHA256SUMS for it.
         """
         if tag.name not in self.sums_read:
             self.sums_read[tag.name] = self.read_release_sums(tag, request)
@@ -555,7 +563,8 @@ class Run:
         self.requested = f"{tag.name} is in {', '.join(targets)} as {', '.join(versions)}"
 
     def fetch_deb(self, tag: aptrepo.Tag, arch: str, asset: str, sha256: str) -> Stanza:
-        target = self.work / "package.deb"
+        """Download a deb of the release and check it. It is stored later, by store_debs."""
+        target = self.work / f"package-{arch}.deb"
         size, digests = http_download(f"{self.config.release_base_url}/{tag.name}/{asset}", target, DEB_LIMIT)
         if digests["sha256"] != sha256:
             raise RepoError(f"{asset} has sha256 {digests['sha256']}, SHA256SUMS says {sha256}")
@@ -569,10 +578,19 @@ class Run:
         # carries this version with other bytes.
         for suite in self.suites.values():
             aptrepo.add_stanza(dict(suite.packages[arch]), stanza)
-        written = self.storage.put_file_once(stanza.fields["filename"], target, sha256, DEB, IMMUTABLE)
-        log(f"pool: {stanza.fields['filename']} {'uploaded' if written else 'already there'} ({size} bytes)")
-        target.unlink()
+        self.staged.append((stanza, target))
         return stanza
+
+    def store_debs(self) -> None:
+        """Put the requested release's debs in the pool.
+
+        A pool file is there for good, so none is written before both debs,
+        everything else the run reads and the signing key have been checked.
+        """
+        for stanza, source in self.staged:
+            written = self.storage.put_file_once(stanza.fields["filename"], source, stanza.sha256, DEB, IMMUTABLE)
+            log(f"pool: {stanza.fields['filename']} {'uploaded' if written else 'already there'} ({stanza.fields['size']} bytes)")
+            source.unlink()
 
     def promote_signed_finals(self) -> None:
         """Final releases wait in `testing` until a maintainer signs them. Move the signed ones."""
@@ -706,6 +724,7 @@ class Run:
         self.promote_signed_finals()
 
         signer = self.load_signing_key()
+        self.store_debs()
         now = datetime.now(timezone.utc).replace(microsecond=0)
         for name in SUITES:
             self.publish_suite(self.suites[name], signer, now)

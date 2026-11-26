@@ -77,7 +77,9 @@ tag; the request names a tag without the sha256 of its `SHA256SUMS`; the
 release has no `SHA256SUMS`, or another one than the request names; a deb is
 not what `SHA256SUMS` lists; a version is already published with other bytes
 (a rebuild needs a new Debian revision); or what is published does not
-verify against the keyring.
+verify against the keyring. Both debs are downloaded and checked before
+either goes into the pool, and the pool is written only once the signing key
+has been read and checked as well: a pool file is there for good.
 
 ### What a run reports
 
@@ -88,29 +90,34 @@ The publisher's exit status says how the run ended, and one line of its log
 |---|---|---|
 | 0 | `PUBLISHED: <tag> is in <suites> as <version>` | Done. A run without a tag has no such line |
 | 1 | `NEEDS A PERSON: <other tag>: ...` | Done, and a release **other than the requested one** needs a person: a final release waiting for `stable` whose `SHA256SUMS` or signature does not check out. The requested release is published all the same and has its `PUBLISHED:` line |
-| 2 | `REFUSED: ...` | The run stopped. A bad request or a bad release is refused before anything is written |
-| 3 | `SKIPPED: ...` | The tag is a release tag of a kind this repository leaves out (`alpha`, `pr`, `hotfix`: anything but a final release, `dev`, `beta` and `rc`). Nothing was read or written |
+| 2 | `REFUSED: ...` | The run stopped. A refusal of the request, of the release, of what is published or of the signing key comes before anything is written. A failure after that, while storing, can leave a pool file that no index lists, or some suites written and others not |
+| 3 | `SKIPPED: ...` | The tag is a release tag of a kind this repository leaves out (`alpha`, `pr`, `hotfix`: anything but a final release, `dev`, `beta` and `rc`). Decided before anything is read; nothing is written |
 
 The state machine does not interpret this: any exit status but 0 fails the
 build, and the execution ends `FAILED` with the build as its cause. The
 status is in the cause, in the build phase's message `Error while executing
 command: python3 publish.py. Reason: exit status <n>`, which is where the
-job in `dashpay/platform` reads it. An execution that the state machine
+job in `dashpay/platform` looks for it. An execution that the state machine
 refused itself has the error `Publisher.RequestRefused` and no build.
 
 The daily run sends `{}`: no tag and no sha256. It adds no release. What it
 moves into `stable` is already in `testing`, byte for byte, and listed in a
 `SHA256SUMS` a maintainer signed.
 
-To publish a release by hand, name the `SHA256SUMS` it has now, after
-looking at it:
+To publish a release by hand, download its `SHA256SUMS` once, look at that
+copy, and name that copy:
 
 ```sh
 tag=v5.1.0
-sums="$(curl -fsSL "https://github.com/dashpay/platform/releases/download/${tag}/SHA256SUMS" | sha256sum | cut -d ' ' -f 1)"
+curl -fsSL -o SHA256SUMS "https://github.com/dashpay/platform/releases/download/${tag}/SHA256SUMS"
+cat SHA256SUMS
+sums="$(sha256sum < SHA256SUMS | cut -d ' ' -f 1)"
 aws stepfunctions start-execution --state-machine-arn <state_machine_arn> \
   --input "{\"tag\":\"${tag}\",\"sha256sums_sha256\":\"${sums}\"}"
 ```
+
+Both values are taken as they are, with nothing trimmed. `{"tag": ""}` is a
+request, and refused; only an input without `tag` is the refresh.
 
 The platform repository needs, once: an environment named
 `dashmate-apt-publish` restricted to `v*` tags (the role trusts

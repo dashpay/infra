@@ -87,7 +87,12 @@ class Requests(unittest.TestCase):
     DIGEST = hashlib.sha256(SUMS).hexdigest()
 
     def test_no_tag_is_a_refresh(self):
-        self.assertIsNone(aptrepo.parse_request("", ""))
+        self.assertIsNone(aptrepo.parse_request(None, None))
+
+    def test_an_empty_tag_is_a_request_and_a_bad_one(self):
+        for request in (("", None), ("", ""), ("", self.DIGEST), (" ", self.DIGEST), ("v5.1.0\n", self.DIGEST)):
+            with self.assertRaisesRegex(RepoError, "not a release tag", msg=request):
+                aptrepo.parse_request(*request)
 
     def test_a_release_is_named_with_the_sha256_of_its_sums(self):
         request = aptrepo.parse_request("v5.1.0-rc.2", self.DIGEST)
@@ -95,8 +100,9 @@ class Requests(unittest.TestCase):
         aptrepo.check_sums_digest(request, self.SUMS)
 
     def test_refuses_a_tag_without_the_sha256(self):
-        with self.assertRaisesRegex(RepoError, "does not carry sha256sums_sha256"):
-            aptrepo.parse_request("v5.1.0", "")
+        for digest in (None, ""):
+            with self.assertRaisesRegex(RepoError, "does not carry sha256sums_sha256", msg=digest):
+                aptrepo.parse_request("v5.1.0", digest)
 
     def test_refuses_what_is_not_a_sha256(self):
         for digest in (self.DIGEST.upper(), self.DIGEST[:-1], self.DIGEST + "0", "sha256:" + self.DIGEST,
@@ -105,8 +111,9 @@ class Requests(unittest.TestCase):
                 aptrepo.parse_request("v5.1.0", digest)
 
     def test_refuses_a_sha256_without_a_tag_and_a_bad_tag(self):
-        with self.assertRaisesRegex(RepoError, "without a release tag"):
-            aptrepo.parse_request("", self.DIGEST)
+        for digest in (self.DIGEST, ""):
+            with self.assertRaisesRegex(RepoError, "without a release tag", msg=digest):
+                aptrepo.parse_request(None, digest)
         with self.assertRaisesRegex(RepoError, "not a release tag"):
             aptrepo.parse_request("v5.1", self.DIGEST)
 
@@ -115,7 +122,8 @@ class Requests(unittest.TestCase):
             with self.assertRaisesRegex(aptrepo.NotPublished, "are not published", msg=name):
                 aptrepo.parse_request(name, self.DIGEST)
         # A request that is not well-formed is refused, whatever its kind.
-        for request in (("v5.1.0-alpha.1", ""), ("v5.1.0-alpha.1", "0" * 63), ("v5.1.0-alpha_1", self.DIGEST)):
+        for request in (("v5.1.0-alpha.1", None), ("v5.1.0-alpha.1", ""), ("v5.1.0-alpha.1", "0" * 63),
+                        ("v5.1.0-alpha_1", self.DIGEST)):
             with self.assertRaises(RepoError, msg=request) as caught:
                 aptrepo.parse_request(*request)
             self.assertNotIsInstance(caught.exception, aptrepo.NotPublished, msg=request)

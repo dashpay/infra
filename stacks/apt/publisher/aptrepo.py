@@ -116,16 +116,20 @@ class Request:
     sums_sha256: str
 
 
-def parse_request(tag: str, sums_sha256: str) -> Request | None:
+def parse_request(tag: str | None, sums_sha256: str | None) -> Request | None:
     """What RELEASE_TAG and SHA256SUMS_SHA256 ask for. None: only refresh.
+
+    Each is None when it was not given. A run refreshes only when neither
+    was: a value that is given and empty is a request, and a bad one. Both
+    are taken as they come, with nothing trimmed.
 
     A release is named together with the sha256 of the SHA256SUMS that the
     release workflow checked and attached. The release's assets can be
     replaced after that check, so the tag alone does not say which packages
     were meant; the digest does. A tag without it is refused.
     """
-    if not tag:
-        if sums_sha256:
+    if tag is None:
+        if sums_sha256 is not None:
             raise RepoError("a sha256 of SHA256SUMS was given without a release tag")
         return None
     parsed = parse_tag(tag)

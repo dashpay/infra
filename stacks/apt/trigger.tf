@@ -49,7 +49,8 @@ resource "aws_sfn_state_machine" "publish" {
             Next = "PublishRelease"
           },
           # Any other input that names a tag is refused here, and no build
-          # starts for it. Only an input without a tag is a refresh.
+          # starts for it. Only an input without a tag is a refresh: the
+          # publisher refuses a tag that is there and empty.
           {
             Variable  = "$.tag"
             IsPresent = true
