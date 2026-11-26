@@ -3,9 +3,10 @@
 
 1. Read every suite as it is published and check it against our own
    signature. Nothing unsigned is ever carried into a new index.
-2. With RELEASE_TAG: take that release's debs from GitHub, check them against
-   the release's SHA256SUMS, put them in the pool and add them to the suites
-   the release belongs in.
+2. With RELEASE_TAG and SHA256SUMS_SHA256: take that release's SHA256SUMS
+   from GitHub and refuse it unless it is the file the request names by its
+   sha256. Then take the release's debs, check them against it, put them in
+   the pool and add them to the suites the release belongs in.
 3. Move final releases that a maintainer has signed since from `testing` into
    `stable`.
 4. Write, sign and upload each suite whose content changed or whose Release
@@ -89,6 +90,7 @@ class Config:
     maintainers: Path
     release_base_url: str
     release_tag: str
+    sums_sha256: str
     withdrawn: Path
     valid_days: int
     min_resign_age: timedelta
@@ -106,6 +108,7 @@ class Config:
             maintainers=Path(env("MAINTAINERS_DIR") or HERE / "maintainers"),
             release_base_url=env("RELEASE_BASE_URL", "https://github.com/dashpay/platform/releases/download").rstrip("/"),
             release_tag=env("RELEASE_TAG", "").strip(),
+            sums_sha256=env("SHA256SUMS_SHA256", "").strip(),
             withdrawn=Path(env("WITHDRAWN_FILE") or HERE / "withdrawn.txt"),
             valid_days=int(env("VALID_DAYS", "10")),
             min_resign_age=timedelta(hours=float(env("MIN_RESIGN_AGE_HOURS", "12"))),
@@ -402,6 +405,7 @@ class Run:
     maintainers: set[str] = field(init=False)
     withdrawn: set[str] = field(default_factory=set)
     suites: dict[str, Suite] = field(default_factory=dict)
+    sums_read: dict[str, tuple[dict[str, str], bool] | None] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
 
     def prepare_keys(self) -> None:
@@ -480,12 +484,25 @@ class Run:
 
     # -- reading a release --
 
-    def release_sums(self, tag: aptrepo.Tag) -> tuple[dict[str, str], bool] | None:
-        """SHA256SUMS of a release, and whether a maintainer signed it. None if it has none."""
+    def release_sums(self, tag: aptrepo.Tag, request: aptrepo.Request | None = None) -> tuple[dict[str, str], bool] | None:
+        """SHA256SUMS of a release, and whether a maintainer signed it. None if it has none.
+
+        With `request`, the file must be the one the request names. A release
+        is read once in a run: the requested release is the first one read,
+        and nothing later in the run sees another SHA256SUMS for it.
+        """
+        if tag.name not in self.sums_read:
+            self.sums_read[tag.name] = self.read_release_sums(tag, request)
+        return self.sums_read[tag.name]
+
+    def read_release_sums(self, tag: aptrepo.Tag, request: aptrepo.Request | None) -> tuple[dict[str, str], bool] | None:
         base = f"{self.config.release_base_url}/{tag.name}"
         sums = http_get(f"{base}/SHA256SUMS", SUMS_LIMIT)
         if sums is None:
             return None
+        if request is not None:
+            aptrepo.check_sums_digest(request, sums)
+            log(f"{tag.name}: SHA256SUMS is the file the request names, sha256 {request.sums_sha256}")
         signed = False
         signature = http_get(f"{base}/SHA256SUMS.asc", SUMS_LIMIT) if self.maintainers else None
         if signature is not None:
@@ -499,8 +516,9 @@ class Run:
                 log(f"{tag.name}: SHA256SUMS.asc is not by a maintainer key this repository accepts")
         return aptrepo.parse_sha256sums(sums), signed
 
-    def add_release(self, tag: aptrepo.Tag) -> None:
-        found = self.release_sums(tag)
+    def add_release(self, request: aptrepo.Request) -> None:
+        tag = request.tag
+        found = self.release_sums(tag, request)
         if found is None:
             raise RepoError(f"{tag.name}: the release has no SHA256SUMS, so its packages cannot be checked")
         sums, signed = found
@@ -660,8 +678,8 @@ class Run:
 
     def execute(self) -> None:
         config = self.config
-        # Refused before anything is read, so a bad tag costs nothing.
-        tag = aptrepo.parse_tag(config.release_tag) if config.release_tag else None
+        # Refused before anything is read, so a bad request costs nothing.
+        request = aptrepo.parse_request(config.release_tag, config.sums_sha256)
         self.prepare_keys()
         self.read_withdrawn()
         for name in SUITES:
@@ -670,8 +688,8 @@ class Run:
 
         # Everything that reads what others wrote happens before the signing
         # key is fetched.
-        if tag is not None:
-            self.add_release(tag)
+        if request is not None:
+            self.add_release(request)
         self.promote_signed_finals()
 
         signer = self.load_signing_key()

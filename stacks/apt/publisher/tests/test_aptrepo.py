@@ -82,6 +82,43 @@ class Tags(unittest.TestCase):
             self.assertIsNone(aptrepo.final_tag_of(version))
 
 
+class Requests(unittest.TestCase):
+    SUMS = b"0123  dashmate_5.1.0-1_amd64.deb\n"
+    DIGEST = hashlib.sha256(SUMS).hexdigest()
+
+    def test_no_tag_is_a_refresh(self):
+        self.assertIsNone(aptrepo.parse_request("", ""))
+
+    def test_a_release_is_named_with_the_sha256_of_its_sums(self):
+        request = aptrepo.parse_request("v5.1.0-rc.2", self.DIGEST)
+        self.assertEqual((request.tag.name, request.sums_sha256), ("v5.1.0-rc.2", self.DIGEST))
+        aptrepo.check_sums_digest(request, self.SUMS)
+
+    def test_refuses_a_tag_without_the_sha256(self):
+        with self.assertRaisesRegex(RepoError, "does not carry sha256sums_sha256"):
+            aptrepo.parse_request("v5.1.0", "")
+
+    def test_refuses_what_is_not_a_sha256(self):
+        for digest in (self.DIGEST.upper(), self.DIGEST[:-1], self.DIGEST + "0", "sha256:" + self.DIGEST,
+                       self.DIGEST + "\n", " " + self.DIGEST, self.DIGEST[:-1] + "g", "0" * 63 + "٠"):
+            with self.assertRaisesRegex(RepoError, "64 lowercase hex digits", msg=digest):
+                aptrepo.parse_request("v5.1.0", digest)
+
+    def test_refuses_a_sha256_without_a_tag_and_a_bad_tag(self):
+        with self.assertRaisesRegex(RepoError, "without a release tag"):
+            aptrepo.parse_request("", self.DIGEST)
+        with self.assertRaisesRegex(RepoError, "not a release tag"):
+            aptrepo.parse_request("v5.1", self.DIGEST)
+        with self.assertRaisesRegex(RepoError, "are not published"):
+            aptrepo.parse_request("v5.1.0-alpha.1", self.DIGEST)
+
+    def test_refuses_any_other_sums(self):
+        request = aptrepo.parse_request("v5.1.0", self.DIGEST)
+        for sums in (b"", self.SUMS[:-1], self.SUMS + b"\n", self.SUMS.replace(b"0123", b"0124")):
+            with self.assertRaisesRegex(RepoError, "the request was made for " + self.DIGEST, msg=sums):
+                aptrepo.check_sums_digest(request, sums)
+
+
 class Sums(unittest.TestCase):
     LINES = (
         f"{'1' * 64}  dashmate-v5.1.0-rc.1-fd25650206-x64.exe\n"

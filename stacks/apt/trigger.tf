@@ -3,8 +3,10 @@
 #
 # Nothing else may start the CodeBuild project. StartBuild lets its caller
 # replace the build's commands, and a caller who can do that can read the
-# signing key. The state machine passes one value, the release tag, and the
-# publisher refuses anything that is not a tag.
+# signing key. The state machine passes two values, the release tag and the
+# sha256 of the SHA256SUMS the request was made for, each as an environment
+# variable. The publisher refuses anything that is not a tag and a sha256,
+# and a release whose SHA256SUMS is not that file.
 
 locals {
   publish_task = {
@@ -29,31 +31,58 @@ resource "aws_sfn_state_machine" "publish" {
   role_arn = aws_iam_role.state_machine.arn
 
   definition = jsonencode({
-    Comment = "Publish the dashmate apt repository. Input {\"tag\": \"v5.1.0\"} adds a release; {} only re-signs and moves releases signed since into stable."
+    Comment = "Publish the dashmate apt repository. Input {\"tag\": \"v5.1.0\", \"sha256sums_sha256\": \"<sha256 of the release's SHA256SUMS>\"} adds a release; {} only re-signs and moves releases signed since into stable."
     StartAt = "HasTag"
     States = {
       HasTag = {
         Type = "Choice"
         # IsPresent first: any other test of a field that is not there fails
-        # the execution.
-        Choices = [{
-          And = [
-            { Variable = "$.tag", IsPresent = true },
-            { Variable = "$.tag", IsString = true },
-          ]
-          Next = "PublishRelease"
-        }]
+        # the execution. The rules are tried in order.
+        Choices = [
+          {
+            And = [
+              { Variable = "$.tag", IsPresent = true },
+              { Variable = "$.tag", IsString = true },
+              { Variable = "$.sha256sums_sha256", IsPresent = true },
+              { Variable = "$.sha256sums_sha256", IsString = true },
+            ]
+            Next = "PublishRelease"
+          },
+          # Any other input that names a tag is refused here, and no build
+          # starts for it. Only an input without a tag is a refresh.
+          {
+            Variable  = "$.tag"
+            IsPresent = true
+            Next      = "RefuseTagWithoutSums"
+          },
+        ]
         Default = "Refresh"
       }
 
+      RefuseTagWithoutSums = {
+        Type  = "Fail"
+        Error = "Publisher.RequestRefused"
+        Cause = "A request that names a tag must be {\"tag\": \"<release tag>\", \"sha256sums_sha256\": \"<sha256 of the release's SHA256SUMS, 64 lowercase hex digits>\"}, both strings. Nothing was started and nothing was published."
+      }
+
+      # The publisher checks both values again (aptrepo.py, parse_request): it
+      # sees only its environment, and refuses a tag that comes without the
+      # sha256.
       PublishRelease = merge(local.publish_task, {
         Parameters = {
           ProjectName = aws_codebuild_project.publisher.name
-          EnvironmentVariablesOverride = [{
-            Name      = "RELEASE_TAG"
-            Type      = "PLAINTEXT"
-            "Value.$" = "$.tag"
-          }]
+          EnvironmentVariablesOverride = [
+            {
+              Name      = "RELEASE_TAG"
+              Type      = "PLAINTEXT"
+              "Value.$" = "$.tag"
+            },
+            {
+              Name      = "SHA256SUMS_SHA256"
+              Type      = "PLAINTEXT"
+              "Value.$" = "$.sha256sums_sha256"
+            },
+          ]
         }
       })
 

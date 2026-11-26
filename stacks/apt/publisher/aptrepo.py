@@ -96,6 +96,56 @@ def suites_for(tag: Tag, signed: bool) -> tuple[str, ...]:
         ) from None
 
 
+# --- what a run is asked to do -----------------------------------------------
+
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class Request:
+    """A release to publish, and the SHA256SUMS it is to be published from."""
+
+    tag: Tag
+    sums_sha256: str
+
+
+def parse_request(tag: str, sums_sha256: str) -> Request | None:
+    """What RELEASE_TAG and SHA256SUMS_SHA256 ask for. None: only refresh.
+
+    A release is named together with the sha256 of the SHA256SUMS that the
+    release workflow checked and attached. The release's assets can be
+    replaced after that check, so the tag alone does not say which packages
+    were meant; the digest does. A tag without it is refused.
+    """
+    if not tag:
+        if sums_sha256:
+            raise RepoError("a sha256 of SHA256SUMS was given without a release tag")
+        return None
+    parsed = parse_tag(tag)
+    if not sums_sha256:
+        raise RepoError(
+            f"{parsed.name}: the request does not carry sha256sums_sha256, the sha256 of the "
+            f"SHA256SUMS it was made for; a release is published only from that file"
+        )
+    if _SHA256.fullmatch(sums_sha256) is None:
+        raise RepoError(
+            f"{parsed.name}: sha256sums_sha256 must be 64 lowercase hex digits, got {sums_sha256[:80]!r}"
+        )
+    suites_for(parsed, False)  # refuses a kind of prerelease that is left out
+    return Request(tag=parsed, sums_sha256=sums_sha256)
+
+
+def check_sums_digest(request: Request, sums: bytes) -> None:
+    """Refuse a SHA256SUMS that is not the file the request was made for."""
+    found = hashlib.sha256(sums).hexdigest()
+    if found != request.sums_sha256:
+        raise RepoError(
+            f"{request.tag.name}: the release's SHA256SUMS has sha256 {found}, and the request was "
+            f"made for {request.sums_sha256}. The file was replaced after the request's run checked "
+            f"it, or the request names another one"
+        )
+
+
 def check_deb_version(tag: Tag, version: str) -> None:
     """Refuse a deb whose version is not the one its tag stands for."""
     pattern = rf"(?:[1-9][0-9]*:)?{re.escape(tag.upstream)}-[1-9][0-9]*"

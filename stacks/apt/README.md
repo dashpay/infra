@@ -45,23 +45,53 @@ works for every version that was published.
 
 1. A job in `dashpay/platform`'s release workflow assumes the role
    `dashmate-apt-release` and starts the state machine
-   `dashmate-apt-publish` with `{"tag": "v5.1.0"}`. That is all the role can
-   do. It cannot start the publisher directly, read the key or write the
-   bucket.
+   `dashmate-apt-publish` with
+
+   ```json
+   {"tag": "v5.1.0", "sha256sums_sha256": "<64 lowercase hex digits>"}
+   ```
+
+   `sha256sums_sha256` is the sha256 of the `SHA256SUMS` that the workflow's
+   checksums job checked and attached. That is all the role can do. It
+   cannot start the publisher directly, read the key or write the bucket.
 2. The state machine runs the CodeBuild project `dashmate-apt-publish`, one
-   run at a time; a second request waits for the first.
-3. The publisher (`publisher/`) downloads the two debs of that tag from the
-   GitHub release, checks them against the release's `SHA256SUMS`, checks
+   run at a time; a second request waits for the first. An input that names
+   a tag without `sha256sums_sha256` ends there, with the error
+   `Publisher.RequestRefused`, and no run starts.
+3. The publisher (`publisher/`) downloads the release's `SHA256SUMS` and
+   refuses it unless it is the file the request names. A release's assets
+   can be replaced after the workflow checked them; a request therefore
+   stands for one `SHA256SUMS`, and through it for two debs, not for whatever
+   the release holds when the publisher gets to it.
+4. It downloads the two debs, checks them against that `SHA256SUMS`, checks
    that each deb's version is the one the tag stands for, and adds them to
    the suites the release belongs in.
-4. A final release without a maintainer's `SHA256SUMS.asc` goes to `testing`
+5. A final release without a maintainer's `SHA256SUMS.asc` goes to `testing`
    and `dev` only. Once the signature is attached, the next run, at the
-   latest the daily one, moves it into `stable`. Nobody has to ask.
+   latest the daily one, moves it into `stable`. Nobody has to ask. The
+   sha256 in the request does not stand in for the signature: it says which
+   file the workflow checked, the signature says a maintainer accepts it.
 
 The publisher refuses, and changes nothing, when: the tag is not a release
-tag; the release has no `SHA256SUMS`; a deb is not what `SHA256SUMS` lists;
-a version is already published with other bytes (a rebuild needs a new
-Debian revision); or what is published does not verify against the keyring.
+tag; the request names a tag without the sha256 of its `SHA256SUMS`; the
+release has no `SHA256SUMS`, or another one than the request names; a deb is
+not what `SHA256SUMS` lists; a version is already published with other bytes
+(a rebuild needs a new Debian revision); or what is published does not
+verify against the keyring.
+
+The daily run sends `{}`: no tag and no sha256. It adds no release. What it
+moves into `stable` is already in `testing`, byte for byte, and listed in a
+`SHA256SUMS` a maintainer signed.
+
+To publish a release by hand, name the `SHA256SUMS` it has now, after
+looking at it:
+
+```sh
+tag=v5.1.0
+sums="$(curl -fsSL "https://github.com/dashpay/platform/releases/download/${tag}/SHA256SUMS" | sha256sum | cut -d ' ' -f 1)"
+aws stepfunctions start-execution --state-machine-arn <state_machine_arn> \
+  --input "{\"tag\":\"${tag}\",\"sha256sums_sha256\":\"${sums}\"}"
+```
 
 The platform repository needs, once: an environment named
 `dashmate-apt-publish` restricted to `v*` tags (the role trusts
@@ -70,11 +100,13 @@ restriction is what keeps branches out), and a job in it that runs
 
 ```sh
 aws stepfunctions start-execution --state-machine-arn <state_machine_arn> \
-  --name "<tag with dots as dashes>-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --input '{"tag":"<tag>"}'
+  --name "<tag with dots as dashes>-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --input '{"tag":"<tag>","sha256sums_sha256":"<sha256 of the SHA256SUMS the run attached>"}'
 ```
 
 and then waits on `aws stepfunctions describe-execution` until the status is
-no longer `RUNNING`. Both ARNs are in the output `repository`.
+no longer `RUNNING`. Both ARNs are in the output `repository`. The job is
+`Publish Dashmate debs to apt` in `release.yml` there (dashpay/platform#6289).
 
 ## Every day
 
@@ -182,9 +214,11 @@ runs that upload by its S3 version. Before applying a change:
 python3 -m unittest discover -s stacks/apt/publisher/tests
 ```
 
-and, on a disposable Ubuntu machine, `tests/integration.sh`, which publishes
-with throwaway keys and installs, upgrades, rolls back and expires with a
-real apt client.
+which checks the rules and, where `gpg` and `dpkg-deb` are installed, runs
+the publisher itself against throwaway keys and releases, without root. And,
+on a disposable Ubuntu machine, `tests/integration.sh`, which publishes with
+throwaway keys and installs, upgrades, rolls back and expires with a real
+apt client.
 
 ## What this stack does not hold
 

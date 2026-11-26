@@ -76,11 +76,28 @@ sign_release() { # tag, key
   gpg --batch --quiet --local-user "$2" --armor --detach-sign --output "$REL/$1/SHA256SUMS.asc" "$REL/$1/SHA256SUMS"
 }
 
-publish() { # [tag]. KEY, AGE, BASE, KEYRING and TO change one input.
+sums_of() { # tag -> the sha256 of the SHA256SUMS its release has now
+  sha256sum < "$REL/$1/SHA256SUMS" | cut -d ' ' -f 1
+}
+
+publish() { # [tag]. KEY, AGE, BASE, KEYRING, TO and SUMS change one input.
+  # A request names its release's SHA256SUMS by sha256. Unless SUMS says
+  # otherwise, that is the file the release has now.
+  local sums=""
+  if [ -n "${SUMS+set}" ]; then
+    sums="$SUMS"
+  elif [ -n "${1:-}" ]; then
+    sums="$(printf '0%.0s' {1..64})"
+    [ ! -f "$REL/$1/SHA256SUMS" ] || sums="$(sums_of "$1")"
+  fi
   REPO_DIR="${TO:-$REPO}" REPO_PREFIX=dashmate SIGNING_KEY_FILE="${KEY:-$W/signing.key}" \
     ARCHIVE_KEYRING="${KEYRING:-$W/keyring/dashmate-archive-keyring.gpg}" MAINTAINERS_DIR="$W/maintainers" \
     WITHDRAWN_FILE="$W/withdrawn.txt" RELEASE_BASE_URL="${BASE:-http://127.0.0.1:8082}" \
-    MIN_RESIGN_AGE_HOURS="${AGE:-0}" RELEASE_TAG="${1:-}" python3 "$HERE/publish.py"
+    MIN_RESIGN_AGE_HOURS="${AGE:-0}" RELEASE_TAG="${1:-}" SHA256SUMS_SHA256="$sums" python3 "$HERE/publish.py"
+}
+
+snapshot() { # the sha256 of every file of the repository, as one sha256
+  (cd "${TO:-$REPO}" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum) | sha256sum
 }
 
 expect() { # exit status, text the output must contain, command...
@@ -122,7 +139,12 @@ expect 2 "not a release tag" publish 'v5.1.0;id'
 make_release v5.1.0-alpha.1 '5.1.0~alpha.1-1'
 expect 2 "are not published" publish v5.1.0-alpha.1
 expect 2 "has no SHA256SUMS" publish v9.9.9
-ok "refused a bad tag, an alpha, and a release that does not exist"
+make_release v5.1.0-rc.1 '5.1.0~rc.1-1'
+SUMS="" expect 2 "does not carry sha256sums_sha256" publish v5.1.0-rc.1
+SUMS="$(sums_of v5.1.0-rc.1 | tr a-f A-F)" expect 2 "64 lowercase hex digits" publish v5.1.0-rc.1
+SUMS="$(sums_of v5.1.0-rc.1)" expect 2 "without a release tag" publish
+[ ! -e "$REPO/dashmate" ] || fail "a refused run wrote something"
+ok "refused a bad tag, an alpha, a release that does not exist, and a tag without the sha256 of its SHA256SUMS"
 
 # --- empty suites, signed, from the first run -----------------------------------
 
@@ -137,9 +159,8 @@ ok "apt-get update accepts the signed, empty stable"
 
 make_release v5.1.0-dev.4 '5.1.0~~dev.4-1'
 expect 0 "dev: + amd64 5.1.0~~dev.4-1" publish v5.1.0-dev.4
-make_release v5.1.0-rc.1 '5.1.0~rc.1-1'
 sign_release v5.1.0-rc.1 "$MAINTAINER"
-expect 0 "" publish v5.1.0-rc.1
+expect 0 "v5.1.0-rc.1: SHA256SUMS is the file the request names" publish v5.1.0-rc.1
 carries stable ""
 carries testing "5.1.0~rc.1-1"
 carries dev "5.1.0~rc.1-1 5.1.0~~dev.4-1"
@@ -157,6 +178,21 @@ ok "a signature by a key that is not a maintainer's opens nothing"
 sign_release v5.1.0 "$MAINTAINER"
 expect 0 "stable: + amd64 5.1.0-1 (signed since)" publish
 carries stable "5.1.0-1"
+
+# --- a release is published only from the SHA256SUMS its request names ---------
+
+make_release v5.1.1-rc.1 '5.1.1~rc.1-1'
+checked="$(sums_of v5.1.1-rc.1)"
+make_release v5.1.1-rc.1 '5.1.1~rc.1-1' "replaced after the check"
+sign_release v5.1.1-rc.1 "$MAINTAINER"
+before="$(snapshot)"
+SUMS="$checked" expect 2 "and the request was made for $checked" publish v5.1.1-rc.1
+SUMS="" expect 2 "does not carry sha256sums_sha256" publish v5.1.1-rc.1
+[ "$(snapshot)" = "$before" ] || fail "a refused request changed the repository"
+ok "refused a release whose SHA256SUMS is not the one its request names, and wrote nothing"
+expect 0 "testing: + amd64 5.1.1~rc.1-1" publish v5.1.1-rc.1
+carries stable "5.1.0-1"
+carries testing "5.1.0-1 5.1.0~rc.1-1 5.1.1~rc.1-1"
 
 # --- a real apt client ----------------------------------------------------------
 
@@ -234,7 +270,7 @@ ok "refused to build on a published suite that does not verify"
 echo "5.1.1-1   # test" > "$W/withdrawn.txt"
 expect 0 "stable: - amd64 5.1.1-1 (withdrawn)" publish
 carries stable "5.1.0-1"
-carries dev "5.1.0-1 5.1.0~rc.1-1 5.1.0~~dev.4-1"
+carries dev "5.1.0-1 5.1.0~rc.1-1 5.1.0~~dev.4-1 5.1.1~rc.1-1"
 make_release v5.1.1 '5.1.1-1'
 sign_release v5.1.1 "$MAINTAINER"
 expect 2 "is withdrawn" publish v5.1.1
@@ -245,7 +281,11 @@ ok "a withdrawn version leaves every suite, stays in the pool, and cannot come b
 
 if [ "${REAL:-}" = 1 ]; then
   export TO="$W/real"
-  BASE=https://github.com/dashpay/platform/releases/download expect 0 "testing: + arm64 5.1.0~rc.1-1" publish v5.1.0-rc.1
+  export BASE=https://github.com/dashpay/platform/releases/download
+  # By hand a request is made for the SHA256SUMS the release has at that moment.
+  SUMS="$(python3 -c 'import hashlib, sys, urllib.request; print(hashlib.sha256(urllib.request.urlopen(sys.argv[1], timeout=60).read()).hexdigest())' "$BASE/v5.1.0-rc.1/SHA256SUMS")"
+  export SUMS
+  expect 0 "testing: + arm64 5.1.0~rc.1-1" publish v5.1.0-rc.1
   carries stable ""
   carries testing "5.1.0~rc.1-1"
   sed -n '1,/^$/p' "$TO/dashmate/dists/testing/main/binary-amd64/Packages" | grep -vE '^(MD5sum|SHA1|SHA512):'
